@@ -1,0 +1,350 @@
+// jrpcframe_tests.nv — the API suite for the codec and for the
+// Content-Length framing.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: jsonrpc-nv.<module>.<fn>`.
+//
+// THE FRAME BYTES ARE THE BASE PROTOCOL's OWN.  The Language Server
+// Protocol's base protocol and the Debug Adapter Protocol both frame a
+// message as `Content-Length: <n>\r\n\r\n<n bytes of UTF-8>`, and the
+// length is in BYTES.  The two tests that matter here are the one that
+// feeds a frame in three pieces and the one that puts a non-ASCII
+// character in the content, because those are the two ways a framing
+// implementation is wrong in production and right on a developer's
+// machine.
+
+use std.test
+use std.list
+use std.str
+use std.bytes
+use std.json
+use jrpcerr
+use jrpcid
+use jrpcmsg
+use jrpccodec
+use jrpcframe
+
+// One complete frame's bytes, for the feeding tests.
+fn frame_of(body: Str) -> [u8]
+    jrpcframe.frame(body)
+
+// Text as the byte list a reader is fed.
+fn u8s(text: Str) -> [u8]
+    bytes.to_byte_list(bytes.from_str(text))
+
+@test
+fn test_the_content_length_is_bytes_and_not_characters() [io]
+    test.case("ASCII content: the two counts agree")
+    test.assert(jrpcframe.content_length("{}") == 2)
+    test.assert(jrpcframe.content_length("{\"a\":1}") == 7)
+
+    test.case("a character outside ASCII makes them disagree")
+    // "é" is two bytes in UTF-8 and one character.  A framer that
+    // wrote the character count truncates every message like this.
+    test.assert(jrpcframe.content_length("\"é\"") == 4)
+
+    test.case("the empty message is zero")
+    test.assert(jrpcframe.content_length("") == 0)
+
+@test
+fn test_the_header_is_the_base_protocols_own() [io]
+    test.case("one mandatory header and a blank line")
+    test.assert(jrpcframe.header_text(2) == "Content-Length: 2\r\n\r\n")
+
+    test.case("and a frame is that header followed by the content")
+    test.assert(list.len(jrpcframe.frame("{}"))
+                == str.len(jrpcframe.header_text(2)) + 2)
+
+@test
+fn test_a_frame_fed_in_pieces_is_one_message() [io]
+    // The case a developer never sees on localhost and every server
+    // meets on a real pipe.
+    let wire = frame_of("{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}")
+    let r = jrpcframe.reader(jrpcframe.default_limits())
+
+    test.case("a prefix produces no message and no fault")
+    match jrpcframe.feed(r, list.take(wire, 4))
+        Err(_)   => test.fail("a prefix is not a fault")
+        Ok(step) =>
+            match step.message
+                Some(_) => test.fail("four bytes are not a message")
+                None    => test.assert(jrpcframe.pending_len(step.reader) == 4)
+
+    test.case("the whole thing at once produces exactly one")
+    match jrpcframe.feed(r, wire)
+        Err(_)   => test.fail("a complete frame is not a fault")
+        Ok(step) =>
+            match step.message
+                None    => test.fail("a complete frame is a message")
+                Some(m) => test.assert(str.contains(m, "exit"))
+
+@test
+fn test_feed_takes_one_and_take_gets_the_rest() [io]
+    // A read of one packet that held three messages gives one from
+    // `feed`; a caller that did not drain answers one message per
+    // packet.
+    let one = frame_of("{\"jsonrpc\":\"2.0\",\"method\":\"a\"}")
+    let two = frame_of("{\"jsonrpc\":\"2.0\",\"method\":\"b\"}")
+    let r = jrpcframe.reader(jrpcframe.default_limits())
+
+    test.case("feed answers the first")
+    match jrpcframe.feed(r, list.concat(one, two))
+        Err(_)   => test.fail("two frames are not a fault")
+        Ok(step) =>
+            match step.message
+                None    => test.fail("the first frame is complete")
+                Some(_) =>
+                    test.case("and take answers the second")
+                    match jrpcframe.take(step.reader)
+                        Err(_)    => test.fail("the second frame is complete")
+                        Ok(step2) =>
+                            match step2.message
+                                None    => test.fail("the second frame is complete")
+                                Some(_) =>
+                                    test.case("and then there is nothing left")
+                                    match jrpcframe.take(step2.reader)
+                                        Err(_)    => test.fail("an empty reader is not a fault")
+                                        Ok(step3) =>
+                                            match step3.message
+                                                Some(_) => test.fail("only two frames were fed")
+                                                None    => test.assert(true)
+
+@test
+fn test_a_missing_content_length_is_a_framing_fault() [io]
+    let r = jrpcframe.reader(jrpcframe.default_limits())
+    let bad = u8s("Content-Type: application/vscode-jsonrpc\r\n\r\n{}")
+
+    test.case("a header section with no Content-Length is refused")
+    match jrpcframe.feed(r, bad)
+        Ok(_)  => test.fail("Content-Length is the one mandatory header")
+        Err(f) => test.assert(jrpcerr.kind_name(f.kind)
+                              == jrpcerr.kind_name(JrpcNoContentLength))
+
+@test
+fn test_a_bad_content_length_is_a_framing_fault_and_not_a_parse_error() [io]
+    // The distinction decides whether the server may keep reading.  A
+    // message fault leaves the stream in step; a framing fault does
+    // not, and a server that answered -32700 and kept reading has
+    // resynchronised on whatever bytes followed.
+    let r = jrpcframe.reader(jrpcframe.default_limits())
+
+    test.case("a non-numeric length is refused")
+    match jrpcframe.feed(r, u8s("Content-Length: banana\r\n\r\n"))
+        Ok(_)  => test.fail("banana is not a length")
+        Err(f) =>
+            test.assert(jrpcerr.kind_name(f.kind)
+                        == jrpcerr.kind_name(JrpcBadContentLength))
+            test.assert(jrpcerr.is_framing_fault(f.kind))
+
+    test.case("and a message fault is NOT a framing fault")
+    test.assert(not jrpcerr.is_framing_fault(JrpcNotJson))
+    test.assert(not jrpcerr.is_framing_fault(JrpcBadVersion))
+
+@test
+fn test_the_content_limit_is_checked_before_the_buffer_grows() [io]
+    // The whole point of the limit: a peer declaring two gigabytes
+    // should be refused, not allocated two gigabytes first.
+    let r = jrpcframe.reader(jrpcframe.small_limits())
+    let huge = u8s("Content-Length: 999999999\r\n\r\n")
+
+    test.case("a declared length over the limit is refused at the header")
+    match jrpcframe.feed(r, huge)
+        Ok(_)  => test.fail("999999999 is over the small limit")
+        Err(f) => test.assert(jrpcerr.kind_name(f.kind)
+                              == jrpcerr.kind_name(JrpcContentTooLarge))
+
+@test
+fn test_a_close_mid_frame_is_a_truncation_and_a_clean_close_is_not() [io]
+    let r = jrpcframe.reader(jrpcframe.default_limits())
+
+    test.case("a close with nothing buffered is an ordinary end")
+    match jrpcframe.finish(r)
+        Err(_)   => test.fail("a clean close is not a fault")
+        Ok(step) =>
+            match step.message
+                Some(_) => test.fail("nothing was buffered")
+                None    => test.assert(true)
+
+    test.case("a close with a partial frame buffered is a truncation")
+    match jrpcframe.feed(r, u8s("Content-Length: 40\r\n\r\n{}"))
+        Err(_)   => test.fail("a prefix is not a fault")
+        Ok(step) =>
+            match jrpcframe.finish(step.reader)
+                Ok(_)  => test.fail("40 bytes were promised and 2 arrived")
+                Err(f) => test.assert(jrpcerr.kind_name(f.kind)
+                                      == jrpcerr.kind_name(JrpcTruncated))
+
+@test
+fn test_awaiting_tells_a_transport_how_much_to_read() [io]
+    let r = jrpcframe.reader(jrpcframe.default_limits())
+
+    test.case("between messages there is nothing to await")
+    match jrpcframe.awaiting(r)
+        Some(_) => test.fail("an empty reader is between messages")
+        None    => test.assert(true)
+
+    test.case("inside a frame it is the remaining content")
+    match jrpcframe.feed(r, u8s("Content-Length: 10\r\n\r\n{}"))
+        Err(_)   => test.fail("a prefix is not a fault")
+        Ok(step) =>
+            match jrpcframe.awaiting(step.reader)
+                None    => test.fail("the reader is mid-frame")
+                Some(n) => test.assert(n == 8)
+
+@test
+fn test_the_decoder_refuses_what_section_four_refuses() [io]
+    test.case("text that is not JSON is JrpcNotJson")
+    match jrpccodec.decode("not json at all")
+        Ok(_)  => test.fail("that is not json")
+        Err(f) => test.assert(jrpcerr.kind_name(f.kind)
+                              == jrpcerr.kind_name(JrpcNotJson))
+
+    test.case("JSON that is not an object is JrpcNotObject")
+    match jrpccodec.decode("4")
+        Ok(_)  => test.fail("a bare number is not a message")
+        Err(f) => test.assert(jrpcerr.kind_name(f.kind)
+                              == jrpcerr.kind_name(JrpcNotObject))
+
+    test.case("a missing or wrong jsonrpc member is JrpcBadVersion")
+    match jrpccodec.decode("{\"method\":\"exit\"}")
+        Ok(_)  => test.fail("jsonrpc is mandatory")
+        Err(f) => test.assert(jrpcerr.kind_name(f.kind)
+                              == jrpcerr.kind_name(JrpcBadVersion))
+
+    match jrpccodec.decode("{\"jsonrpc\":\"1.0\",\"method\":\"exit\"}")
+        Ok(_)  => test.fail("only 2.0 is this protocol")
+        Err(f) => test.assert(jrpcerr.kind_name(f.kind)
+                              == jrpcerr.kind_name(JrpcBadVersion))
+
+    test.case("params that are not structured is JrpcBadParams")
+    match jrpccodec.decode("{\"jsonrpc\":\"2.0\",\"method\":\"m\",\"params\":4}")
+        Ok(_)  => test.fail("section 4.2 permits an array or an object")
+        Err(f) => test.assert(jrpcerr.kind_name(f.kind)
+                              == jrpcerr.kind_name(JrpcBadParams))
+
+    test.case("an empty batch is JrpcEmptyBatch")
+    match jrpccodec.decode("[]")
+        Ok(_)  => test.fail("section 6 makes that an Invalid Request")
+        Err(f) => test.assert(jrpcerr.kind_name(f.kind)
+                              == jrpcerr.kind_name(JrpcEmptyBatch))
+
+@test
+fn test_a_response_with_both_or_neither_outcome_is_refused() [io]
+    // Section 5: "Either the result member or error member MUST be
+    // included, but both members MUST NOT be included."
+    test.case("both is JrpcBothOutcomes")
+    let both = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":1,\"error\":{\"code\":-1,\"message\":\"x\"}}"
+    match jrpccodec.decode(both)
+        Ok(_)  => test.fail("both members is not a response")
+        Err(f) => test.assert(jrpcerr.kind_name(f.kind)
+                              == jrpcerr.kind_name(JrpcBothOutcomes))
+
+    test.case("neither, and no method either, is JrpcNoOutcome")
+    match jrpccodec.decode("{\"jsonrpc\":\"2.0\",\"id\":1}")
+        Ok(_)  => test.fail("that is neither a request nor a response")
+        Err(f) => test.assert(jrpcerr.kind_name(f.kind)
+                              == jrpcerr.kind_name(JrpcNoOutcome))
+
+@test
+fn test_the_fault_to_error_mapping_is_section_five_ones() [io]
+    // Only text that is not JSON is -32700.  Everything that parsed
+    // and is not a valid request object is -32600.  A server that
+    // answered -32700 to an object with no `method` told a peer its
+    // serialiser was broken when it was not.
+    test.case("not JSON is Parse error")
+    test.assert(jrpcerr.error_for_fault(
+        jrpcerr.fault(JrpcNotJson, "")).code == -32700)
+
+    test.case("a missing method is Invalid Request, not Parse error")
+    test.assert(jrpcerr.error_for_fault(
+        jrpcerr.fault(JrpcNoMethod, "")).code == -32600)
+
+    test.case("so is a bad version, a bad id and an empty batch")
+    test.assert(jrpcerr.error_for_fault(
+        jrpcerr.fault(JrpcBadVersion, "")).code == -32600)
+    test.assert(jrpcerr.error_for_fault(
+        jrpcerr.fault(JrpcBadId, "")).code == -32600)
+    test.assert(jrpcerr.error_for_fault(
+        jrpcerr.fault(JrpcEmptyBatch, "")).code == -32600)
+
+    test.case("and bad params is Invalid params")
+    test.assert(jrpcerr.error_for_fault(
+        jrpcerr.fault(JrpcBadParams, "")).code == -32602)
+
+@test
+fn test_the_reserved_codes_are_the_specifications() [io]
+    test.case("the five named codes")
+    test.assert(jrpcerr.parse_error().code == -32700)
+    test.assert(jrpcerr.invalid_request().code == -32600)
+    test.assert(jrpcerr.method_not_found("m").code == -32601)
+    test.assert(jrpcerr.invalid_params("d").code == -32602)
+    test.assert(jrpcerr.internal_error("d").code == -32603)
+
+    test.case("the reserved block is -32768 to -32000 inclusive")
+    test.assert(jrpcerr.is_reserved(-32768))
+    test.assert(jrpcerr.is_reserved(-32000))
+    test.assert(not jrpcerr.is_reserved(-32769))
+    test.assert(not jrpcerr.is_reserved(-31999))
+    test.assert(not jrpcerr.is_reserved(100))
+
+    test.case("a server error inside -32099 to -32000 is accepted")
+    match jrpcerr.server_error(-32001, "the index is rebuilding")
+        Err(_) => test.fail("-32001 is in the server error range")
+        Ok(e)  => test.assert(e.code == -32001)
+
+    test.case("and one outside it is refused rather than clamped")
+    match jrpcerr.server_error(-32601, "mine now")
+        Ok(_)  => test.fail("-32601 is Method not found and not yours")
+        Err(f) => test.assert(jrpcerr.kind_name(f.kind)
+                              == jrpcerr.kind_name(JrpcCodeNotServerRange))
+
+@test
+fn test_decode_or_error_hands_back_the_response_to_send() [io]
+    test.case("bad text becomes a response with the null id")
+    match jrpccodec.decode_or_error("not json")
+        Ok(_)  => test.fail("that is not json")
+        Err(r) =>
+            test.assert(jrpcid.is_null(r.id))
+            match r.outcome
+                JrpcResult(_)  => test.fail("a fault is an error outcome")
+                JrpcFailure(e) => test.assert(e.code == -32700)
+
+    test.case("good text decodes and nothing is to be sent")
+    match jrpccodec.decode_or_error("{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}")
+        Err(_) => test.fail("that is a legal notification")
+        Ok(e)  => test.assert(jrpcmsg.replies_needed(e) == 0)
+
+@test
+fn test_no_replies_is_nothing_and_not_an_empty_array() [io]
+    // Section 6, the sentence implementations skip.
+    test.case("an empty reply set encodes to nothing at all")
+    match jrpccodec.encode_batch_replies([])
+        Some(_) => test.fail("the server MUST NOT return an empty Array")
+        None    => test.assert(true)
+
+    test.case("a non-empty one encodes to an array")
+    let one = jrpcmsg.ok(jrpcid.id_int(1), json.null())
+    match jrpccodec.encode_batch_replies([one])
+        None    => test.fail("one response is something to send")
+        Some(t) => test.assert(str.starts_with(t, "["))
+
+@test
+fn test_a_round_trip_keeps_the_message() [io]
+    test.case("a call survives encode and decode")
+    let q = jrpcmsg.call(jrpcid.id_int(7), "textDocument/hover", None)
+    match jrpccodec.decode(jrpccodec.encode_request(q))
+        Err(_) => test.fail("this package's own output decodes")
+        Ok(e)  =>
+            test.assert(not jrpcmsg.is_batch(e))
+            test.assert(jrpcmsg.replies_needed(e) == 1)
+
+    test.case("and so does a batch")
+    let m = JrpcRequestMsg(q)
+    match jrpcmsg.batch([m, m])
+        Err(_) => test.fail("two messages are a legal batch")
+        Ok(b)  =>
+            match jrpccodec.decode(jrpccodec.encode(b))
+                Err(_) => test.fail("this package's own output decodes")
+                Ok(e)  =>
+                    test.assert(jrpcmsg.is_batch(e))
+                    test.assert(jrpcmsg.message_count(e) == 2)

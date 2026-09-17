@@ -1,0 +1,43 @@
+[package]
+name        = "jsonrpc-nv"
+version     = "0.0.1"
+description = "JSON-RPC 2.0 as typed values: a request whose absent id IS the notification, a response that cannot carry both a result and an error, batches that cannot be empty, the reserved error codes, and the Content-Length framing LSP and DAP put in front of the messages as a feed-and-drain reader.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`.  Nothing here opens a socket, reads a pipe or starts a
+# process: a message is decoded from text the caller already has, and
+# the framing reader is fed bytes the caller already read.  Every
+# public function's effect row is `[]`.  The transport — a socket, a
+# pipe, a pair of file descriptors — is a `host` package on top of
+# this one.
+layer       = "core"
+
+category    = "web"
+
+tags        = ["json-rpc", "jsonrpc", "rpc", "lsp", "dap", "framing", "sans-io", "web"]
+repository  = "https://github.com/novolang/jsonrpc-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.9.0"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "JSON-RPC 2.0 messages and the Content-Length framing over them"
+
+[dependencies]
+# None.
+#
+# NOT a JSON package.  `params`, `result` and an error's `data` are the
+# STANDARD LIBRARY's JSON value (`std.json`'s `JsonValueH`),
+# deliberately, because a second JSON value type in the assembly would
+# mean every caller converting a document before it could send it, and
+# every consumer of this package — lsp-nv, dap-nv, the MCP surface —
+# converting it back.

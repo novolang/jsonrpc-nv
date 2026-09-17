@@ -1,0 +1,417 @@
+// jrpcerr.nv — the error object the protocol puts on the wire, and the
+// faults a decode can produce.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// TWO KINDS OF WRONG, AND THEY ARE NOT THE SAME TYPE
+//
+// `JrpcError` is a VALUE THE PROTOCOL DEFINES: the three members
+// `code`, `message` and `data` that section 5.1 puts in a response, and
+// which a peer receives and acts on.  A method that failed answers one.
+//
+// `JrpcFault` is what THIS PACKAGE could not do: text that is not JSON,
+// a member of the wrong type, a frame whose header is malformed.  It
+// never goes on the wire as itself.
+//
+// They are separate types because they have separate audiences.  A
+// `JrpcError` is written by the method and read by the peer.  A
+// `JrpcFault` is read by the server that received the bytes, and the
+// server has to DECIDE what to answer — which is what
+// `error_for_fault` does, once, instead of every server deciding it
+// again.
+//
+// THE CODES ARE SECTION 5.1's, AND THE RANGE IS RESERVED
+//
+// Section 5.1 reserves -32768 to -32000 for the protocol, and names
+// five values in it.  Inside the reserved block, -32099 to -32000 is
+// set aside for implementation-defined server errors.  Everything
+// outside -32768 to -32000 is the application's to use.  `is_reserved`
+// and `server_error` are the two functions that keep an application
+// from quietly minting a code the protocol already means something by.
+
+use std.json
+
+// What this package could not decode.
+//
+// ```novo
+// use jrpcerr
+//
+// fn main() [io]
+//     println(jrpcerr.kind_name(JrpcNotJson))
+// ```
+pub enum JrpcFaultKind
+    // The text is not JSON at all.  Answered to the peer as -32700
+    // "Parse error", which is the one code section 5.1 reserves for
+    // exactly this.
+    JrpcNotJson
+    // The text is JSON, but the message is not an object — a bare
+    // number, a string, a boolean.  Section 4 requires an object.
+    JrpcNotObject
+    // The `jsonrpc` member is absent, or is not the string `"2.0"`.
+    // Section 4 makes it mandatory, and a peer speaking 1.0 sends no
+    // such member at all.
+    JrpcBadVersion
+    // A request has no `method` member, or its `method` is not a
+    // string.
+    JrpcNoMethod
+    // A request's `params` is present and is neither an array nor an
+    // object.  Section 4.2 permits only those two.
+    JrpcBadParams
+    // An `id` is present and is neither a string, a number nor null.
+    // Section 4 permits only those three, and this package also
+    // refuses a number with a fractional part, which the same section
+    // says SHOULD NOT be used.
+    JrpcBadId
+    // A response carries both `result` and `error`.  Section 5 says
+    // exactly one must be included.
+    JrpcBothOutcomes
+    // A response carries neither `result` nor `error`, and is
+    // therefore not a response — nor a request, having no `method`.
+    JrpcNoOutcome
+    // A batch is an empty array.  Section 6 makes that an Invalid
+    // Request, which is the one case where a batch produces a single
+    // response rather than an array of them.
+    JrpcEmptyBatch
+    // An error object is missing `code` or `message`, or one of them
+    // is of the wrong type.
+    JrpcBadErrorObject
+    // A server error code outside -32099 to -32000 was offered to
+    // `server_error`, which is the range section 5.1 sets aside for
+    // implementation-defined errors.
+    JrpcCodeNotServerRange
+    // A frame's header section has no `Content-Length`.  The base
+    // protocol makes it the one mandatory header.
+    JrpcNoContentLength
+    // A frame's `Content-Length` is not a non-negative decimal
+    // integer.
+    JrpcBadContentLength
+    // A frame's header line has no colon, or a header name contains a
+    // character a field name may not.
+    JrpcBadHeaderLine
+    // A frame declares a `Content-Type` whose charset is not UTF-8.
+    // The base protocol fixes the encoding, and decoding a frame as
+    // something else silently corrupts every non-ASCII string in it.
+    JrpcBadCharset
+    // A frame's header section grew past the reader's limit before a
+    // blank line arrived.
+    JrpcHeaderTooLarge
+    // A frame's `Content-Length` is larger than the reader's limit.
+    // Refused BEFORE the bytes are buffered, which is the point: a
+    // peer that declares two gigabytes should not be allocated two
+    // gigabytes first.
+    JrpcContentTooLarge
+    // The peer closed in the middle of a frame — a header section
+    // with no blank line, or a content section shorter than its
+    // declared length.
+    JrpcTruncated
+
+// A fault, with the detail that makes it readable.
+//
+// ```novo
+// use jrpcerr
+//
+// fn main() [io]
+//     println(jrpcerr.fault(JrpcNotObject, "a bare number").message())
+// ```
+pub struct JrpcFault
+    // Which fault.
+    kind: JrpcFaultKind
+    // What was actually seen, for a log: the member name, the
+    // offending header line, the version string the peer sent.  Never
+    // the whole message — a message can be megabytes.
+    detail: Str
+    // The byte offset into the text or the frame the fault was found
+    // at, or -1 when the fault is not about a position.
+    offset: Int
+
+// `JrpcFault` is an `Error`, which is what lets
+// `Result<T, JrpcFault>` exist at all (SPEC section 3.4).
+impl Error for JrpcFault
+    // The one-line message, for a log.
+    //
+    // Panics with `not implemented` until the bodies land.
+    fn message(self) -> Str
+        todo("jsonrpc-nv.JrpcFault.message")
+
+// The error object a response carries, from section 5.1.
+//
+// ```novo
+// use jrpcerr
+//
+// fn main() [io]
+//     println("${jrpcerr.method_not_found("spellCheck").code}")   // -32601
+// ```
+pub struct JrpcError
+    // The code.  An integer, and the protocol reserves -32768 to
+    // -32000 of them.
+    code: Int
+    // A single short sentence, for a person.  Section 5.1 says it
+    // SHOULD be limited to one concise sentence.
+    message: Str
+    // Anything else the method wants the peer to have, or `None`.
+    // Defined by the method, not by the protocol.
+    data: ?JsonValueH
+
+// A fault, made.
+//
+// `offset` is -1, meaning the fault is not about a position; use
+// `fault_at` when it is.
+//
+// ```novo
+// use jrpcerr
+//
+// fn main() [io]
+//     println(jrpcerr.kind_name(jrpcerr.fault(JrpcNoMethod, "").kind))
+// ```
+pub fn fault(kind: JrpcFaultKind, detail: Str) -> JrpcFault []
+    todo("jsonrpc-nv.jrpcerr.fault")
+
+// A fault at a byte offset.
+//
+// ```novo
+// use jrpcerr
+//
+// fn main() [io]
+//     println("${jrpcerr.fault_at(JrpcNotJson, "expected a value", 17).offset}")
+// ```
+pub fn fault_at(kind: JrpcFaultKind, detail: Str, offset: Int) -> JrpcFault []
+    todo("jsonrpc-nv.jrpcerr.fault_at")
+
+// The fault kind's name, stable across releases: `"not_json"`,
+// `"bad_version"`, `"content_too_large"`.
+//
+// Free of anything the peer sent, so it is safe as a metric label.
+// Putting `f.message()` in one would put a peer-chosen method name
+// into a time series database.
+//
+// ```novo
+// use jrpcerr
+//
+// fn main() [io]
+//     println(jrpcerr.kind_name(JrpcEmptyBatch))         // empty_batch
+// ```
+pub fn kind_name(k: JrpcFaultKind) -> Str []
+    todo("jsonrpc-nv.jrpcerr.kind_name")
+
+// Whether a fault happened in the FRAMING rather than in the message.
+//
+// True for the six frame faults — no `Content-Length`, a bad one, a
+// bad header line, a bad charset, either size limit, a truncation.
+// The distinction decides what a server can still do: a message fault
+// leaves the stream in step, so the server answers an error and reads
+// the next frame, and a framing fault does not, so the only correct
+// response is to close the connection.  A server that answered -32700
+// to a bad `Content-Length` and kept reading has resynchronised on
+// whatever bytes happened to follow.
+//
+// ```novo
+// use jrpcerr
+//
+// fn main() [io]
+//     println("${jrpcerr.is_framing_fault(JrpcBadContentLength)}")   // true
+//     println("${jrpcerr.is_framing_fault(JrpcNotJson)}")            // false
+// ```
+pub fn is_framing_fault(k: JrpcFaultKind) -> Bool []
+    todo("jsonrpc-nv.jrpcerr.is_framing_fault")
+
+// The error object a server should answer a decode fault with.
+//
+// THE FUNCTION THAT KEEPS EVERY SERVER FROM DECIDING THIS AGAIN.
+// Section 5.1 fixes the mapping and it is narrower than people
+// remember: only text that is not JSON is -32700, and everything that
+// parsed but is not a valid request object — a missing `jsonrpc`, a
+// `method` that is a number, an empty batch — is -32600.  A server
+// that answered -32700 to a well-formed JSON object with no `method`
+// has told the peer its serialiser is broken when the peer's
+// serialiser is fine.
+//
+// A framing fault has no answer: `is_framing_fault` is true, the
+// stream is out of step, and this function still answers -32700 for
+// the caller that logs it, but the caller should close rather than
+// send it.
+//
+// ```novo
+// use jrpcerr
+//
+// fn main() [io]
+//     let f = jrpcerr.fault(JrpcNoMethod, "no `method` member")
+//     println("${jrpcerr.error_for_fault(f).code}")      // -32600
+// ```
+pub fn error_for_fault(f: JrpcFault) -> JrpcError []
+    todo("jsonrpc-nv.jrpcerr.error_for_fault")
+
+// -32700 "Parse error": the text received was not valid JSON.
+//
+// ```novo
+// use jrpcerr
+//
+// fn main() [io]
+//     println("${jrpcerr.parse_error().code}")           // -32700
+// ```
+pub fn parse_error() -> JrpcError []
+    todo("jsonrpc-nv.jrpcerr.parse_error")
+
+// -32600 "Invalid Request": the JSON sent is not a valid request
+// object.
+//
+// ```novo
+// use jrpcerr
+//
+// fn main() [io]
+//     println(jrpcerr.invalid_request().message)         // Invalid Request
+// ```
+pub fn invalid_request() -> JrpcError []
+    todo("jsonrpc-nv.jrpcerr.invalid_request")
+
+// -32601 "Method not found": the method does not exist or is not
+// available.
+//
+// The method name is carried in `data`, because a peer debugging a
+// typo needs to see what the server heard.
+//
+// ```novo
+// use jrpcerr
+//
+// fn main() [io]
+//     println("${jrpcerr.method_not_found("textDocument/rename").code}")
+// ```
+pub fn method_not_found(method: Str) -> JrpcError []
+    todo("jsonrpc-nv.jrpcerr.method_not_found")
+
+// -32602 "Invalid params": the parameters are the wrong shape for the
+// method.
+//
+// ```novo
+// use jrpcerr
+//
+// fn main() [io]
+//     println("${jrpcerr.invalid_params("`line` must be an integer").code}")
+// ```
+pub fn invalid_params(detail: Str) -> JrpcError []
+    todo("jsonrpc-nv.jrpcerr.invalid_params")
+
+// -32603 "Internal error": the method failed for a reason that is the
+// server's own.
+//
+// ```novo
+// use jrpcerr
+//
+// fn main() [io]
+//     println("${jrpcerr.internal_error("index not built").code}")
+// ```
+pub fn internal_error(detail: Str) -> JrpcError []
+    todo("jsonrpc-nv.jrpcerr.internal_error")
+
+// An implementation-defined server error, refused unless its code is
+// in -32099 to -32000.
+//
+// A `Result` rather than a silent clamp, because the alternative — a
+// server picking -32000 for "disk full" and -32700 for "index
+// missing" — makes a peer's error handling depend on which server it
+// is talking to.  The range is section 5.1's, and a code outside the
+// whole reserved block is the application's own and does not need
+// this function at all: `error` takes any code.
+//
+// ```novo
+// use jrpcerr
+//
+// fn main() [io]
+//     match jrpcerr.server_error(-32001, "the index is rebuilding")
+//         Ok(e)  => println("${e.code}")
+//         Err(f) => println(f.message())
+// ```
+pub fn server_error(code: Int, message: Str) -> Result<JrpcError, JrpcFault> []
+    todo("jsonrpc-nv.jrpcerr.server_error")
+
+// Any error object at all, with the code the caller chose.
+//
+// No range check: an application code outside -32768 to -32000 is the
+// application's business.  `is_reserved` is how a caller checks its
+// own before it ships.
+//
+// ```novo
+// use jrpcerr
+//
+// fn main() [io]
+//     println("${jrpcerr.error(100, "over quota").code}")   // 100
+// ```
+pub fn error(code: Int, message: Str) -> JrpcError []
+    todo("jsonrpc-nv.jrpcerr.error")
+
+// The same error with `data` attached.
+//
+// ```novo
+// use std.json
+// use jrpcerr
+//
+// fn main() [io]
+//     let e = jrpcerr.with_data(jrpcerr.invalid_params("bad range"),
+//                               json.string("line 4"))
+//     println("${e.code}")
+// ```
+pub fn with_data(e: JrpcError, data: JsonValueH) -> JrpcError []
+    todo("jsonrpc-nv.jrpcerr.with_data")
+
+// Whether a code is inside the block section 5.1 reserves for the
+// protocol, -32768 to -32000 inclusive.
+//
+// An application choosing its own codes calls this once, in a test,
+// and never ships a code that means something else to every other
+// implementation.
+//
+// ```novo
+// use jrpcerr
+//
+// fn main() [io]
+//     println("${jrpcerr.is_reserved(-32601)}")          // true
+//     println("${jrpcerr.is_reserved(100)}")             // false
+// ```
+pub fn is_reserved(code: Int) -> Bool []
+    todo("jsonrpc-nv.jrpcerr.is_reserved")
+
+// The name section 5.1 gives a reserved code — `"Parse error"`,
+// `"Method not found"`, `"Server error"` — or `""` for a code the
+// specification does not name.
+//
+// ```novo
+// use jrpcerr
+//
+// fn main() [io]
+//     println(jrpcerr.code_name(-32602))                 // Invalid params
+// ```
+pub fn code_name(code: Int) -> Str []
+    todo("jsonrpc-nv.jrpcerr.code_name")
+
+// The error object as a JSON value, ready to be a response's `error`
+// member.
+//
+// ```novo
+// use std.json
+// use jrpcerr
+//
+// fn main() [io]
+//     println(json.stringify(jrpcerr.error_to_json(jrpcerr.parse_error())))
+// ```
+pub fn error_to_json(e: JrpcError) -> JsonValueH []
+    todo("jsonrpc-nv.jrpcerr.error_to_json")
+
+// An error object read back out of a JSON value.
+//
+// `code` must be an integer and `message` a string; anything else is
+// `JrpcBadErrorObject`.  A `data` member of any type at all is kept as
+// it is, because the protocol defines nothing about it.
+//
+// ```novo
+// use std.json
+// use jrpcerr
+//
+// fn main() [io]
+//     match json.parse("{\"code\":-32601,\"message\":\"no such method\"}")
+//         None    => println("not json")
+//         Some(v) =>
+//             match jrpcerr.error_from_json(v)
+//                 Ok(e)  => println("${e.code}")
+//                 Err(f) => println(f.message())
+// ```
+pub fn error_from_json(v: JsonValueH) -> Result<JrpcError, JrpcFault> []
+    todo("jsonrpc-nv.jrpcerr.error_from_json")

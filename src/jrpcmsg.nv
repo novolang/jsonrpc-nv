@@ -1,0 +1,415 @@
+// jrpcmsg.nv — the request, the response and the batch, as values whose
+// illegal shapes cannot be written.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE NOTIFICATION IS THE ABSENCE OF THE ID
+//
+// Section 4.1: "A Notification is a Request object without an `id`
+// member."  Not a flag, not a boolean beside the id, not a separate
+// message type with the same three other members.  `JrpcRequest.id` is
+// `?JrpcId`, and `None` IS the notification — so a server cannot
+// construct a request that is a notification and has an id, and a
+// server that answers a notification has to have written the answer
+// against an id it does not have.
+//
+// The rule that follows is the one implementations get wrong: section
+// 4.1 says the server MUST NOT reply to a notification, and section 6
+// says a batch of nothing but notifications produces NO RESPONSE AT
+// ALL — not an empty array.  `replies_needed` answers zero for that
+// batch, and zero means send nothing.
+//
+// A RESPONSE CANNOT CARRY BOTH, AND CANNOT CARRY NEITHER
+//
+// Section 5: the `result` member and the `error` member are both
+// required and "exactly one" must be included.  Written as two
+// optional fields, both mistakes are reachable — a method that set
+// neither, a method that set `error` and forgot to clear `result`.
+// `JrpcOutcome` is an enum with one arm each, so the response holds
+// exactly one by construction and the decoder's `JrpcBothOutcomes` and
+// `JrpcNoOutcome` faults are the only places the two mistakes can
+// still be named.
+//
+// A BATCH CANNOT BE EMPTY
+//
+// Section 6 makes an empty array an Invalid Request, which is a
+// special case that exists only because the array is empty.  `batch`
+// answers a `Result` and refuses one, so no code path in this package
+// or above it ever holds an empty batch, and the special case lives at
+// the one place a batch is made.
+
+use std.json
+use jrpcerr
+use jrpcid
+
+// The version string this package speaks.
+//
+// One function rather than a literal in five places, and the return is
+// `"2.0"` — the exact value section 4 requires in every request and
+// section 5 in every response.
+//
+// ```novo
+// use jrpcmsg
+//
+// fn main() [io]
+//     println(jrpcmsg.version())                        // 2.0
+// ```
+pub fn version() -> Str []
+    todo("jsonrpc-nv.jrpcmsg.version")
+
+// A call to a method, section 4.
+//
+// ```novo
+// use jrpcmsg
+//
+// fn main() [io]
+//     println(jrpcmsg.notification("exit", None).method)   // exit
+// ```
+pub struct JrpcRequest
+    // The id, or `None` for a notification.  `None` is not "an id I
+    // have not chosen yet": it is the whole difference between a call
+    // and a notification, and section 4.1 makes it so.
+    id: ?JrpcId
+    // The method name.  Section 4 reserves names beginning `rpc.` for
+    // the protocol itself; `is_reserved_method` is the check.
+    method: Str
+    // The arguments, or `None` when the member is absent.  Section
+    // 4.2 permits only an array (by position) or an object (by name),
+    // and `params_ok` is the check a decoder applies.
+    params: ?JsonValueH
+
+// What a response carries: exactly one of a result and an error.
+//
+// ```novo
+// use jrpcmsg
+// use jrpcerr
+//
+// fn main() [io]
+//     println("${jrpcmsg.is_failure(JrpcFailure(jrpcerr.parse_error()))}")   // true
+// ```
+pub enum JrpcOutcome
+    // The method succeeded, and this is what it returned.  Any JSON
+    // value at all, including `null` — a method that returns nothing
+    // returns `null`, and `null` is a result, not an absence.
+    JrpcResult(value: JsonValueH)
+    // The method failed, and this is section 5.1's error object.
+    JrpcFailure(error: jrpcerr.JrpcError)
+
+// An answer to a call, section 5.
+//
+// ```novo
+// use std.json
+// use jrpcid
+// use jrpcmsg
+//
+// fn main() [io]
+//     let r = jrpcmsg.ok(JrpcIdInt(1), json.string("done"))
+//     println(jrpcid.id_text(r.id))                     // 1
+// ```
+pub struct JrpcResponse
+    // The id of the request being answered, or the null id when the
+    // request's id could not be determined.  Not optional: a response
+    // always has an `id` member, and section 5 is explicit that the
+    // unreadable case is Null rather than absence.
+    id: JrpcId
+    // The result or the error, never both and never neither.
+    outcome: JrpcOutcome
+
+// One message on the wire, in either direction.
+//
+// A peer that both calls and is called — which is every LSP server and
+// every DAP adapter — reads a stream of these and dispatches on the
+// arm.
+//
+// ```novo
+// use std.json
+// use jrpcmsg
+//
+// fn main() [io]
+//     let m = JrpcRequestMsg(jrpcmsg.notification("initialized", None))
+//     println("${jrpcmsg.is_request(m)}")               // true
+// ```
+pub enum JrpcMessage
+    // A call or a notification.
+    JrpcRequestMsg(request: JrpcRequest)
+    // An answer to a call.
+    JrpcResponseMsg(response: JrpcResponse)
+
+// What arrived: one message, or a batch of them.
+//
+// Section 6's batch is an ARRAY of message objects, and the array is
+// visible at the top level and nowhere else — so this is the type the
+// codec answers and the type a server dispatches on, and no function
+// below this one has to wonder whether it is inside a batch.
+//
+// ```novo
+// use jrpcmsg
+//
+// fn main() [io]
+//     let e = jrpcmsg.single(JrpcRequestMsg(jrpcmsg.notification("exit", None)))
+//     println("${jrpcmsg.replies_needed(e)}")           // 0
+// ```
+pub enum JrpcEnvelope
+    // One message, sent on its own.
+    JrpcSingle(message: JrpcMessage)
+    // Several messages in one array.  Non-empty: `batch` is the only
+    // constructor and it refuses an empty one.
+    JrpcBatch(messages: [JrpcMessage])
+
+// A call: a request with an id, which the peer must answer.
+//
+// ```novo
+// use jrpcmsg
+//
+// fn main() [io]
+//     println(jrpcmsg.call(JrpcIdInt(1), "initialize", None).method)
+// ```
+pub fn call(id: JrpcId, method: Str, params: ?JsonValueH) -> JrpcRequest []
+    todo("jsonrpc-nv.jrpcmsg.call")
+
+// A notification: a request with no id, which the peer must not answer.
+//
+// ```novo
+// use jrpcmsg
+//
+// fn main() [io]
+//     println("${jrpcmsg.is_notification(jrpcmsg.notification("exit", None))}")
+// ```
+pub fn notification(method: Str, params: ?JsonValueH) -> JrpcRequest []
+    todo("jsonrpc-nv.jrpcmsg.notification")
+
+// Whether a request is a notification — that is, whether its id is
+// absent.
+//
+// ```novo
+// use jrpcmsg
+//
+// fn main() [io]
+//     println("${jrpcmsg.is_notification(jrpcmsg.call(JrpcIdInt(1), "m", None))}")
+// ```
+pub fn is_notification(r: JrpcRequest) -> Bool []
+    todo("jsonrpc-nv.jrpcmsg.is_notification")
+
+// Whether the method name is one section 4 reserves for the protocol.
+//
+// True for any name beginning `rpc.`, which the specification reserves
+// for internal methods and extensions and says MUST NOT be used for
+// anything else.  A server registering its own handlers checks this at
+// start-up; the alternative is discovering it the day the protocol
+// adds a method with that name.
+//
+// ```novo
+// use jrpcmsg
+//
+// fn main() [io]
+//     println("${jrpcmsg.is_reserved_method("rpc.discover")}")   // true
+// ```
+pub fn is_reserved_method(method: Str) -> Bool []
+    todo("jsonrpc-nv.jrpcmsg.is_reserved_method")
+
+// Whether a `params` value is one of the two shapes section 4.2
+// permits: an array or an object.
+//
+// False for a number, a string, a boolean and a null.  A server that
+// accepted `"params": 4` has accepted a message no other
+// implementation will send it.
+//
+// ```novo
+// use std.json
+// use jrpcmsg
+//
+// fn main() [io]
+//     println("${jrpcmsg.params_ok(json.array([]))}")            // true
+//     println("${jrpcmsg.params_ok(json.int(4))}")               // false
+// ```
+pub fn params_ok(params: JsonValueH) -> Bool []
+    todo("jsonrpc-nv.jrpcmsg.params_ok")
+
+// A successful response.
+//
+// `value` is the method's return, and `null` is a legitimate one — a
+// method that returns nothing returns `null`, which is a result and
+// not an absence.
+//
+// ```novo
+// use std.json
+// use jrpcmsg
+//
+// fn main() [io]
+//     println("${jrpcmsg.is_success(jrpcmsg.ok(JrpcIdInt(1), json.null()).outcome)}")
+// ```
+pub fn ok(id: JrpcId, value: JsonValueH) -> JrpcResponse []
+    todo("jsonrpc-nv.jrpcmsg.ok")
+
+// A failed response.
+//
+// ```novo
+// use jrpcerr
+// use jrpcmsg
+//
+// fn main() [io]
+//     let r = jrpcmsg.failed(JrpcIdInt(1), jrpcerr.method_not_found("x"))
+//     println("${jrpcmsg.is_failure(r.outcome)}")       // true
+// ```
+pub fn failed(id: JrpcId, error: jrpcerr.JrpcError) -> JrpcResponse []
+    todo("jsonrpc-nv.jrpcmsg.failed")
+
+// Whether an outcome is a result.
+//
+// ```novo
+// use std.json
+// use jrpcmsg
+//
+// fn main() [io]
+//     println("${jrpcmsg.is_success(JrpcResult(json.int(1)))}")   // true
+// ```
+pub fn is_success(o: JrpcOutcome) -> Bool []
+    todo("jsonrpc-nv.jrpcmsg.is_success")
+
+// Whether an outcome is an error.
+//
+// ```novo
+// use jrpcerr
+// use jrpcmsg
+//
+// fn main() [io]
+//     println("${jrpcmsg.is_failure(JrpcFailure(jrpcerr.invalid_request()))}")
+// ```
+pub fn is_failure(o: JrpcOutcome) -> Bool []
+    todo("jsonrpc-nv.jrpcmsg.is_failure")
+
+// Whether a message is a request or a notification.
+//
+// ```novo
+// use jrpcmsg
+//
+// fn main() [io]
+//     println("${jrpcmsg.is_request(JrpcRequestMsg(jrpcmsg.notification("e", None)))}")
+// ```
+pub fn is_request(m: JrpcMessage) -> Bool []
+    todo("jsonrpc-nv.jrpcmsg.is_request")
+
+// Whether a response answers a request.
+//
+// The ids must match by `jrpcid.id_equals`, which is exact and is
+// false for two nulls — so a parse-error response is never delivered
+// to an outstanding request, and a client holding a table of them has
+// to decide what to do with it rather than being told it belongs to
+// whichever request was first.
+//
+// ```novo
+// use std.json
+// use jrpcmsg
+//
+// fn main() [io]
+//     let q = jrpcmsg.call(JrpcIdInt(1), "initialize", None)
+//     let a = jrpcmsg.ok(JrpcIdInt(1), json.null())
+//     println("${jrpcmsg.answers(q, a)}")               // true
+// ```
+pub fn answers(request: JrpcRequest, response: JrpcResponse) -> Bool []
+    todo("jsonrpc-nv.jrpcmsg.answers")
+
+// One message, on its own.
+//
+// ```novo
+// use jrpcmsg
+//
+// fn main() [io]
+//     println("${jrpcmsg.message_count(jrpcmsg.single(
+//         JrpcRequestMsg(jrpcmsg.notification("e", None))))}")   // 1
+// ```
+pub fn single(m: JrpcMessage) -> JrpcEnvelope []
+    todo("jsonrpc-nv.jrpcmsg.single")
+
+// A batch, refused when it is empty.
+//
+// Section 6 makes an empty array an Invalid Request — a special case
+// that exists only because the array is empty, and the one shape of
+// batch that produces a single response rather than an array of them.
+// Refusing it here means no value of this type is ever empty, and the
+// special case lives at the one place a batch is made rather than at
+// every place one is read.
+//
+// ```novo
+// use jrpcmsg
+//
+// fn main() [io]
+//     match jrpcmsg.batch([])
+//         Ok(_)  => println("this cannot happen")
+//         Err(f) => println(f.message())
+// ```
+pub fn batch(messages: [JrpcMessage]) -> Result<JrpcEnvelope, jrpcerr.JrpcFault> []
+    todo("jsonrpc-nv.jrpcmsg.batch")
+
+// How many messages an envelope carries.
+//
+// ```novo
+// use jrpcmsg
+//
+// fn main() [io]
+//     println("${jrpcmsg.message_count(jrpcmsg.single(
+//         JrpcRequestMsg(jrpcmsg.notification("e", None))))}")
+// ```
+pub fn message_count(e: JrpcEnvelope) -> Int []
+    todo("jsonrpc-nv.jrpcmsg.message_count")
+
+// How many responses this envelope requires.
+//
+// THE RULE EVERY IMPLEMENTATION GETS WRONG.  Section 6: a server
+// answers a batch with an array holding one response per non-
+// notification member — and "If there are no Response objects
+// contained within the Response array as it is to be sent to the
+// client, the server MUST NOT return an empty Array and should return
+// nothing at all."  So a batch of five notifications answers ZERO, and
+// zero means send no bytes, not `[]`.
+//
+// A single notification answers zero for the same reason.  A single
+// call answers one, and that one is sent as an object rather than as
+// a one-element array.
+//
+// ```novo
+// use jrpcmsg
+//
+// fn main() [io]
+//     let n = JrpcRequestMsg(jrpcmsg.notification("exit", None))
+//     match jrpcmsg.batch([n, n])
+//         Err(_) => println("unreachable")
+//         Ok(b)  => println("${jrpcmsg.replies_needed(b)}")       // 0
+// ```
+pub fn replies_needed(e: JrpcEnvelope) -> Int []
+    todo("jsonrpc-nv.jrpcmsg.replies_needed")
+
+// The messages an envelope carries, whether it is a batch or not.
+//
+// A dispatcher written against this handles both shapes with one loop,
+// and `replies_needed` is what tells it whether to send an array, an
+// object or nothing when it is done.
+//
+// ```novo
+// use std.list
+// use jrpcmsg
+//
+// fn main() [io]
+//     let e = jrpcmsg.single(JrpcRequestMsg(jrpcmsg.notification("e", None)))
+//     println("${list.len(jrpcmsg.messages_of(e))}")    // 1
+// ```
+pub fn messages_of(e: JrpcEnvelope) -> [JrpcMessage] []
+    todo("jsonrpc-nv.jrpcmsg.messages_of")
+
+// Whether the envelope is a batch, which decides how the answer is
+// SHAPED.
+//
+// A batch of one call is answered with a one-element array; a single
+// call is answered with an object.  A server that answered the first
+// with an object has sent a reply the client's batch handler will not
+// recognise.
+//
+// ```novo
+// use jrpcmsg
+//
+// fn main() [io]
+//     println("${jrpcmsg.is_batch(jrpcmsg.single(
+//         JrpcRequestMsg(jrpcmsg.notification("e", None))))}")    // false
+// ```
+pub fn is_batch(e: JrpcEnvelope) -> Bool []
+    todo("jsonrpc-nv.jrpcmsg.is_batch")

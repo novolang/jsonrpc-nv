@@ -1,0 +1,96 @@
+// jrpccover_tests.nv — the public functions the two behaviour suites do
+// not reach, each named once so the surface is covered.
+//
+// RED ON PURPOSE, like the rest: every call here reaches
+// `not implemented: jsonrpc-nv.<module>.<fn>`.
+//
+// These are the accessors and the conversions — the functions whose
+// behaviour is "hand me the same thing in another shape".  They have no
+// rule of their own to assert, so asserting one would be inventing a
+// specification rather than testing against one; what this file does is
+// make sure the implementation lane cannot land a body that does not
+// even typecheck at a call site.
+
+use std.test
+use std.json
+use jrpcerr
+use jrpcid
+use jrpcmsg
+use jrpccodec
+use jrpcframe
+
+@test
+fn test_every_error_helper_is_reachable() [io]
+    test.case("a fault can carry an offset into the text")
+    test.assert(jrpcerr.fault_at(JrpcNotJson, "expected a value", 17).offset == 17)
+
+    test.case("an error can carry data")
+    let e = jrpcerr.with_data(jrpcerr.invalid_params("bad range"),
+                              json.string("line 4"))
+    test.assert(e.code == -32602)
+
+    test.case("the specification's own name for a reserved code")
+    test.assert(jrpcerr.code_name(-32700) == "Parse error")
+    test.assert(jrpcerr.code_name(100) == "")
+
+    test.case("an error object round-trips through JSON")
+    match jrpcerr.error_from_json(jrpcerr.error_to_json(jrpcerr.parse_error()))
+        Err(_) => test.fail("this package's own output decodes")
+        Ok(r)  => test.assert(r.code == -32700)
+
+    test.case("and an object missing `message` is refused")
+    match json.parse("{\"code\":-1}")
+        None    => test.fail("that is json")
+        Some(v) =>
+            match jrpcerr.error_from_json(v)
+                Ok(_)  => test.fail("`message` is required")
+                Err(f) => test.assert(jrpcerr.kind_name(f.kind)
+                                      == jrpcerr.kind_name(JrpcBadErrorObject))
+
+@test
+fn test_an_id_renders_and_round_trips() [io]
+    test.case("a string id prints with its quotes, so it differs from a number")
+    test.assert(jrpcid.id_text(jrpcid.id_str("1")) == "\"1\"")
+    test.assert(jrpcid.id_text(jrpcid.id_int(1)) == "1")
+    test.assert(jrpcid.id_text(jrpcid.id_null()) == "null")
+
+    test.case("and an id round-trips through JSON")
+    match jrpcid.id_from_json(jrpcid.id_to_json(jrpcid.id_int(9)))
+        Err(_) => test.fail("this package's own output decodes")
+        Ok(i)  => test.assert(jrpcid.id_equals(i, jrpcid.id_int(9)))
+
+@test
+fn test_every_codec_entry_point_is_reachable() [io]
+    let note = jrpcmsg.notification("exit", None)
+    let m = JrpcRequestMsg(note)
+    let r = jrpcmsg.ok(jrpcid.id_int(1), json.null())
+
+    test.case("a value the caller already parsed decodes")
+    match json.parse("{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}")
+        None    => test.fail("that is json")
+        Some(v) =>
+            match jrpccodec.decode_value(v)
+                Err(_) => test.fail("that is a legal notification")
+                Ok(e)  => test.assert(not jrpcmsg.is_batch(e))
+
+            test.case("and so does one message on its own")
+            match jrpccodec.decode_message(v)
+                Err(_) => test.fail("that is a legal notification")
+                Ok(dm) => test.assert(jrpcmsg.is_request(dm))
+
+    test.case("a message, a request and a response each encode")
+    test.assert(jrpccodec.encode_message(m) == jrpccodec.encode_request(note))
+    test.assert(jrpccodec.encode_response(r) != "")
+
+    test.case("and each has a JSON form")
+    test.assert(json.type_of(jrpccodec.message_to_json(m)) == "object")
+    test.assert(json.type_of(jrpccodec.envelope_to_json(jrpcmsg.single(m))) == "object")
+
+@test
+fn test_the_optional_content_type_header_is_available() [io]
+    // Optional in both protocols and accepted by every implementation;
+    // here for a caller talking to one that insists on it.
+    test.case("the framed bytes are longer than the plain framing")
+    let plain = jrpcframe.frame("{}")
+    let typed = jrpcframe.frame_with_content_type("{}")
+    test.assert(list.len(typed) > list.len(plain))

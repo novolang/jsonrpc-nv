@@ -1,0 +1,300 @@
+// jrpcframe.nv — the header framing LSP and DAP put in front of every
+// JSON-RPC message, as a reader that is fed bytes and drained of
+// messages.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// WHAT THE FRAMING IS
+//
+// JSON-RPC 2.0 says nothing about where one message ends and the next
+// begins.  The Language Server Protocol's base protocol and the Debug
+// Adapter Protocol both answer that the same way, with something that
+// looks like an HTTP message: a header section of `Name: value` lines
+// ending in carriage return and line feed, a blank line, and then
+// exactly as many bytes of content as the `Content-Length` header
+// said.  `Content-Length` is the one mandatory header.  The only other
+// one either protocol defines is `Content-Type`, whose charset must be
+// `utf-8`.
+//
+// The length is in BYTES of the UTF-8 encoded content, not characters.
+// A message containing one emoji is four bytes longer than its
+// character count, and a server that wrote the character count there
+// truncates every non-ASCII message it sends.  `content_length` is the
+// function that gets it right; `frame` is the function that means a
+// caller never has to.
+//
+// A FEED-AND-DRAIN READER, BECAUSE THIS IS `core`
+//
+// This package reads no socket.  The host reads bytes however it likes
+// — a socket, a pipe, a pair of file descriptors, a test fixture — and
+// hands them here.  `feed` takes bytes and produces at most one
+// message; `take` produces the next one already buffered, adding
+// nothing.  A read of 8 KiB that contained three complete messages
+// gives one from `feed` and two more from `take`, and a caller loops
+// until `take` answers `None` before it goes back to its transport.
+//
+// `finish` is not a formality.  A peer that closes mid-frame has
+// truncated a message, and only the caller knows the close happened —
+// so `finish` is how the reader is told, and `JrpcTruncated` is what
+// it answers when there were bytes left over.
+//
+// THE LIMITS ARE THE CALLER'S
+//
+// Both limits exist because the unbounded version is a denial of
+// service costing the attacker one connection: a header section with
+// no blank line, or a `Content-Length` of nine quintillion.  The
+// content limit is checked when the header is READ, before any content
+// buffer is grown, which is the whole point of checking it.
+
+use jrpcerr
+
+// What a reader refuses to grow past.
+//
+// A value the caller owns rather than constants this package chose,
+// because an editor talking to a language server over a pipe wants
+// numbers an order of magnitude larger than a debug adapter on a
+// constrained device does.
+//
+// ```novo
+// use jrpcframe
+//
+// fn main() [io]
+//     println("${jrpcframe.default_limits().max_content}")
+// ```
+pub struct JrpcLimits
+    // Bytes in the header section, before the blank line that ends
+    // it.  Exceeding it is `JrpcHeaderTooLarge`.
+    max_headers: Int
+    // Bytes one message's content may declare.  Exceeding it is
+    // `JrpcContentTooLarge`, answered when the header is read and
+    // before the content buffer is grown.
+    max_content: Int
+
+// The state between "some bytes turned up" and "here is a message".
+//
+// Opaque: the fields are here because a struct needs them, and a
+// caller that reaches into one has coupled itself to a buffering
+// decision this package intends to change.  `pending_len` and
+// `awaiting` are the two facts about a reader that are anybody's
+// business.
+pub struct JrpcReader
+    limits: JrpcLimits
+    pending: [u8]
+    expected: Int
+
+// A reader and the message that came out of it, if one did.
+//
+// A struct rather than a tuple because the two halves are used at
+// different places: the caller reassigns the reader and dispatches on
+// the message.
+pub struct JrpcStep
+    reader: JrpcReader
+    // `None` means "no complete message in what I have been given
+    // yet", which on a pipe is the ordinary case and not a fault.
+    // The content, as text — decoding it is `jrpccodec`'s job, so a
+    // caller that wants to log the raw message can, and a caller that
+    // wants a value calls `jrpccodec.decode` on this.
+    message: ?Str
+
+// A header section of 8 KiB and content of 32 MiB.
+//
+// The content figure is what an editor sending a whole file's
+// semantic tokens actually needs; the header figure is two orders of
+// magnitude more than the two headers either protocol defines.
+//
+// ```novo
+// use jrpcframe
+//
+// fn main() [io]
+//     println("${jrpcframe.default_limits().max_headers}")
+// ```
+pub fn default_limits() -> JrpcLimits []
+    todo("jsonrpc-nv.jrpcframe.default_limits")
+
+// A header section of 512 bytes and content of 64 KiB.
+//
+// Named rather than left to each constrained caller to invent, because
+// the number that matters on a small device is the one that fits
+// beside everything else in its RAM, and every caller inventing it
+// separately gets a different answer.
+//
+// ```novo
+// use jrpcframe
+//
+// fn main() [io]
+//     println("${jrpcframe.small_limits().max_content}")
+// ```
+pub fn small_limits() -> JrpcLimits []
+    todo("jsonrpc-nv.jrpcframe.small_limits")
+
+// A reader holding nothing.
+//
+// ```novo
+// use jrpcframe
+//
+// fn main() [io]
+//     let r = jrpcframe.reader(jrpcframe.default_limits())
+//     println("${jrpcframe.pending_len(r)}")            // 0
+// ```
+pub fn reader(limits: JrpcLimits) -> JrpcReader []
+    todo("jsonrpc-nv.jrpcframe.reader")
+
+// Adds bytes, and takes one message if the addition completed one.
+//
+// Takes ONE.  A read that completed three leaves two inside, and
+// `take` is what gets them; a caller that fed and did not drain has
+// written a server that answers one message per network packet.
+//
+// ```novo
+// use jrpcframe
+//
+// fn main() [io]
+//     let r = jrpcframe.reader(jrpcframe.default_limits())
+//     match jrpcframe.feed(r, [67 as u8, 111 as u8])
+//         Err(f)   => println(f.message())
+//         Ok(step) =>
+//             match step.message
+//                 None    => println("partial, as expected")
+//                 Some(_) => println("a message")
+// ```
+pub fn feed(r: JrpcReader, bytes: [u8]) -> Result<JrpcStep, jrpcerr.JrpcFault> []
+    todo("jsonrpc-nv.jrpcframe.feed")
+
+// Takes one message if a complete one is already buffered, adding
+// nothing.
+//
+// `message` is `None` when the buffer holds a prefix, and the reader
+// comes back unchanged.  A caller loops on this until `None` and then
+// goes back to its transport.
+//
+// ```novo
+// use jrpcframe
+//
+// fn main() [io]
+//     let r = jrpcframe.reader(jrpcframe.default_limits())
+//     match jrpcframe.take(r)
+//         Err(f)   => println(f.message())
+//         Ok(step) => println("${jrpcframe.pending_len(step.reader)}")
+// ```
+pub fn take(r: JrpcReader) -> Result<JrpcStep, jrpcerr.JrpcFault> []
+    todo("jsonrpc-nv.jrpcframe.take")
+
+// Tells the reader the peer closed, and takes the last message.
+//
+// Not a formality.  A close with bytes still buffered is a truncated
+// message — a header section with no blank line, or content shorter
+// than its declared length — and only the caller knows the close
+// happened.  A close with nothing buffered answers `message: None` and
+// no fault, which is an ordinary end of connection.
+//
+// ```novo
+// use jrpcframe
+//
+// fn main() [io]
+//     let r = jrpcframe.reader(jrpcframe.default_limits())
+//     match jrpcframe.finish(r)
+//         Err(f)   => println(f.message())
+//         Ok(step) =>
+//             match step.message
+//                 None    => println("a clean close")
+//                 Some(_) => println("one last message")
+// ```
+pub fn finish(r: JrpcReader) -> Result<JrpcStep, jrpcerr.JrpcFault> []
+    todo("jsonrpc-nv.jrpcframe.finish")
+
+// How many bytes the reader is holding that have not become a message.
+//
+// A caller watching this grow without a message coming out is watching
+// a peer that is slow, or one that is filling its buffer on purpose.
+//
+// ```novo
+// use jrpcframe
+//
+// fn main() [io]
+//     println("${jrpcframe.pending_len(jrpcframe.reader(jrpcframe.default_limits()))}")
+// ```
+pub fn pending_len(r: JrpcReader) -> Int []
+    todo("jsonrpc-nv.jrpcframe.pending_len")
+
+// How many more content bytes the reader needs to finish the message
+// it is in the middle of, or `None` when it is between messages.
+//
+// A transport that can size its next read asks this and reads exactly
+// that much.
+//
+// ```novo
+// use jrpcframe
+//
+// fn main() [io]
+//     match jrpcframe.awaiting(jrpcframe.reader(jrpcframe.default_limits()))
+//         None    => println("between messages")
+//         Some(n) => println("${n} more bytes")
+// ```
+pub fn awaiting(r: JrpcReader) -> ?Int []
+    todo("jsonrpc-nv.jrpcframe.awaiting")
+
+// A message's content framed for sending: the `Content-Length` header,
+// the blank line, and the content.
+//
+// The length is the UTF-8 BYTE count of `body`, which is what the base
+// protocol requires and what `content_length` computes.  A caller that
+// built this by hand from a character count truncates every message
+// containing a character outside ASCII.
+//
+// ```novo
+// use std.list
+// use jrpcframe
+//
+// fn main() [io]
+//     println("${list.len(jrpcframe.frame("{}"))}")
+// ```
+pub fn frame(body: Str) -> [u8] []
+    todo("jsonrpc-nv.jrpcframe.frame")
+
+// The same, with the `Content-Type` header both protocols define.
+//
+// `application/vscode-jsonrpc; charset=utf-8`.  Optional in both
+// protocols and accepted by every implementation; here for a caller
+// talking to one that insists.
+//
+// ```novo
+// use std.list
+// use jrpcframe
+//
+// fn main() [io]
+//     println("${list.len(jrpcframe.frame_with_content_type("{}"))}")
+// ```
+pub fn frame_with_content_type(body: Str) -> [u8] []
+    todo("jsonrpc-nv.jrpcframe.frame_with_content_type")
+
+// The number a `Content-Length` header must carry for this content:
+// its length in UTF-8 BYTES.
+//
+// Not its character count.  The two differ for every message
+// containing a character outside ASCII, and a diagnostic quoting a
+// source line is such a message more often than an English-speaking
+// author expects.
+//
+// ```novo
+// use jrpcframe
+//
+// fn main() [io]
+//     println("${jrpcframe.content_length("{}")}")      // 2
+// ```
+pub fn content_length(body: Str) -> Int []
+    todo("jsonrpc-nv.jrpcframe.content_length")
+
+// The header section a frame would carry for this content, as text.
+//
+// For a caller writing its own bytes — an embedded transport with its
+// own buffer, a test asserting on the exact header — and for a log
+// that shows the framing beside the message.
+//
+// ```novo
+// use jrpcframe
+//
+// fn main() [io]
+//     println(jrpcframe.header_text(2))
+// ```
+pub fn header_text(content_length: Int) -> Str []
+    todo("jsonrpc-nv.jrpcframe.header_text")

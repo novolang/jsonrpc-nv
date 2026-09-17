@@ -1,0 +1,236 @@
+// jrpccodec.nv — text on the wire to typed values, and back.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE DECODER IS TOTAL AND THE ENCODER IS NOT FALLIBLE
+//
+// `decode` answers a `Result`, because the text comes from a peer.
+// `encode` answers a `Str` and no `Result`, because every value of
+// `JrpcEnvelope` is a message the specification permits — the
+// constructors in `jrpcmsg` refused the ones that are not — so there
+// is nothing left for an encoder to fail on.  A package whose encoder
+// returns a `Result` is telling its caller that some of the values it
+// handed out cannot be sent, which is a design that has already gone
+// wrong once.
+//
+// WHAT `decode_or_error` IS FOR
+//
+// Section 5 requires a server that could not read a message to answer
+// an error response with a null id.  Writing that means catching the
+// fault, mapping it to a code, choosing the id, and building the
+// response — four steps in which the third is the one everybody gets
+// wrong, because the id is not available precisely in the case where
+// it is needed.  `decode_or_error` is those four steps done once: it
+// answers either the envelope or the response to send, and a server's
+// read loop is then two arms with no protocol decisions in either.
+//
+// IT DOES NOT PARSE JSON ITSELF
+//
+// The value type is `std.json`'s, and so is the parser.  This module
+// reads members out of a parsed value and checks them against sections
+// 4 and 5; it has no scanner, no escape handling and no number
+// grammar, because the standard library has all three and a second
+// copy would be a second set of bugs.
+
+use std.json
+use jrpcerr
+use jrpcmsg
+
+// An envelope decoded from the text of one message.
+//
+// The text is the CONTENT of one frame, not a stream: framing is
+// `jrpcframe`'s, and a caller feeding this function two concatenated
+// messages gets `JrpcNotJson`, which is correct and is not the error
+// it was hoping for.
+//
+// ```novo
+// use jrpccodec
+//
+// fn main() [io]
+//     match jrpccodec.decode("{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}")
+//         Ok(_)  => println("a notification")
+//         Err(f) => println(f.message())
+// ```
+pub fn decode(text: Str) -> Result<jrpcmsg.JrpcEnvelope, jrpcerr.JrpcFault> []
+    todo("jsonrpc-nv.jrpccodec.decode")
+
+// An envelope decoded from a JSON value the caller already parsed.
+//
+// For a transport that hands over values rather than text — an
+// in-process channel, a test harness, a peer whose framing layer
+// parsed as it read.
+//
+// ```novo
+// use std.json
+// use jrpccodec
+//
+// fn main() [io]
+//     match json.parse("{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}")
+//         None    => println("not json")
+//         Some(v) =>
+//             match jrpccodec.decode_value(v)
+//                 Ok(_)  => println("decoded")
+//                 Err(f) => println(f.message())
+// ```
+pub fn decode_value(v: JsonValueH) -> Result<jrpcmsg.JrpcEnvelope, jrpcerr.JrpcFault> []
+    todo("jsonrpc-nv.jrpccodec.decode_value")
+
+// One message decoded from one JSON object.
+//
+// The arm is decided by the members present, which is what section 4
+// and section 5 say rather than what an implementation might prefer: a
+// `method` member makes it a request, and a `result` or an `error`
+// member makes it a response.  An object with neither is `JrpcNoOutcome`
+// and an object with `method` AND `result` is a request, because
+// section 4 lists no member the server may not also have invented.
+//
+// ```novo
+// use std.json
+// use jrpccodec
+//
+// fn main() [io]
+//     match json.parse("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}")
+//         None    => println("not json")
+//         Some(v) =>
+//             match jrpccodec.decode_message(v)
+//                 Ok(_)  => println("a response")
+//                 Err(f) => println(f.message())
+// ```
+pub fn decode_message(v: JsonValueH) -> Result<jrpcmsg.JrpcMessage, jrpcerr.JrpcFault> []
+    todo("jsonrpc-nv.jrpccodec.decode_message")
+
+// The envelope, or the response a server must send because it could
+// not be read.
+//
+// THE FUNCTION A SERVER'S READ LOOP IS WRITTEN AGAINST.  Section 5
+// requires an error response with a null id when the request's id
+// cannot be determined, and this is that requirement applied: the
+// fault is mapped by `jrpcerr.error_for_fault`, the id is
+// `JrpcIdNull`, and the caller has a value it can encode and send with
+// no further protocol reasoning.
+//
+// A framing fault is still answered here, so the caller can log a
+// response it will not send — `jrpcerr.is_framing_fault` is the check
+// that says to close the connection instead.
+//
+// ```novo
+// use jrpccodec
+//
+// fn main() [io]
+//     match jrpccodec.decode_or_error("not json at all")
+//         Ok(_)  => println("decoded")
+//         Err(r) => println(jrpccodec.encode_response(r))
+// ```
+pub fn decode_or_error(text: Str) -> Result<jrpcmsg.JrpcEnvelope, jrpcmsg.JrpcResponse> []
+    todo("jsonrpc-nv.jrpccodec.decode_or_error")
+
+// The envelope as the text of one message.
+//
+// A `JrpcSingle` encodes as an object and a `JrpcBatch` as an array,
+// which is section 6's distinction and the reason the two are separate
+// arms rather than a list of length one.
+//
+// ```novo
+// use jrpcmsg
+// use jrpccodec
+//
+// fn main() [io]
+//     let e = jrpcmsg.single(JrpcRequestMsg(jrpcmsg.notification("exit", None)))
+//     println(jrpccodec.encode(e))
+// ```
+pub fn encode(e: jrpcmsg.JrpcEnvelope) -> Str []
+    todo("jsonrpc-nv.jrpccodec.encode")
+
+// One message as text.
+//
+// ```novo
+// use jrpcmsg
+// use jrpccodec
+//
+// fn main() [io]
+//     println(jrpccodec.encode_message(
+//         JrpcRequestMsg(jrpcmsg.notification("exit", None))))
+// ```
+pub fn encode_message(m: jrpcmsg.JrpcMessage) -> Str []
+    todo("jsonrpc-nv.jrpccodec.encode_message")
+
+// One request as text.
+//
+// ```novo
+// use jrpcmsg
+// use jrpccodec
+//
+// fn main() [io]
+//     println(jrpccodec.encode_request(jrpcmsg.call(JrpcIdInt(1), "initialize", None)))
+// ```
+pub fn encode_request(r: jrpcmsg.JrpcRequest) -> Str []
+    todo("jsonrpc-nv.jrpccodec.encode_request")
+
+// One response as text.
+//
+// ```novo
+// use std.json
+// use jrpcmsg
+// use jrpccodec
+//
+// fn main() [io]
+//     println(jrpccodec.encode_response(jrpcmsg.ok(JrpcIdInt(1), json.null())))
+// ```
+pub fn encode_response(r: jrpcmsg.JrpcResponse) -> Str []
+    todo("jsonrpc-nv.jrpccodec.encode_response")
+
+// A message as a JSON value, for a caller that will embed it in
+// something else or compare it structurally.
+//
+// The member order is the specification's reading order — `jsonrpc`,
+// then `id`, then `method` and `params` or `result` and `error` —
+// because a person reading a log of these reads the version and the id
+// first.  Member order is not part of a JSON object's identity, so
+// nothing depends on it; it is a courtesy to whoever has to read the
+// bytes.
+//
+// ```novo
+// use std.json
+// use jrpcmsg
+// use jrpccodec
+//
+// fn main() [io]
+//     println(json.stringify(jrpccodec.message_to_json(
+//         JrpcRequestMsg(jrpcmsg.notification("exit", None)))))
+// ```
+pub fn message_to_json(m: jrpcmsg.JrpcMessage) -> JsonValueH []
+    todo("jsonrpc-nv.jrpccodec.message_to_json")
+
+// An envelope as a JSON value.
+//
+// ```novo
+// use std.json
+// use jrpcmsg
+// use jrpccodec
+//
+// fn main() [io]
+//     let e = jrpcmsg.single(JrpcRequestMsg(jrpcmsg.notification("exit", None)))
+//     println(json.stringify(jrpccodec.envelope_to_json(e)))
+// ```
+pub fn envelope_to_json(e: jrpcmsg.JrpcEnvelope) -> JsonValueH []
+    todo("jsonrpc-nv.jrpccodec.envelope_to_json")
+
+// The response array a server sends for a batch, or `None` when it
+// must send nothing.
+//
+// Section 6's rule, applied: the responses the server produced go in
+// an array, and an EMPTY set of responses is not an empty array but no
+// message at all.  `None` is that "nothing", and it is a different
+// thing from `Some("[]")` — a client reading `[]` has been told its
+// batch produced results, which it did not.
+//
+// ```novo
+// use jrpccodec
+//
+// fn main() [io]
+//     match jrpccodec.encode_batch_replies([])
+//         None    => println("send nothing")
+//         Some(t) => println(t)
+// ```
+pub fn encode_batch_replies(replies: [jrpcmsg.JrpcResponse]) -> ?Str []
+    todo("jsonrpc-nv.jrpccodec.encode_batch_replies")

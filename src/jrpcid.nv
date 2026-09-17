@@ -1,0 +1,194 @@
+// jrpcid.nv — the request identifier, and the matching rule that makes
+// a response belong to a request.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE ID IS A TYPE, NOT A STRING
+//
+// Section 4 of the specification permits three things in `id`: a
+// String, a Number, or Null.  A client that sends `"1"` and a client
+// that sends `1` are sending different ids, and a server that turned
+// both into a string would answer the first client's request to the
+// second.  `JrpcId` has one arm for each of the three, so the
+// distinction survives a round trip and `id_equals` can be exact.
+//
+// A FRACTIONAL NUMBER IS REFUSED
+//
+// The same section says a Number SHOULD NOT contain fractional parts,
+// and the reason is arithmetic: `1.0` and `1` are one JSON number, so a
+// peer that round-trips an id through a double-precision parser can
+// hand back an id that no longer matches what it was sent.  This
+// package refuses a fractional id at the decode — `JrpcBadId` — rather
+// than accepting one it cannot promise to return unchanged.
+//
+// NULL IS AN ID A RESPONSE HAS AND A REQUEST DOES NOT
+//
+// Section 5 says that when the id of a request cannot be determined —
+// the text did not parse, or the object had no usable `id` — the
+// response's id MUST be Null.  So `JrpcIdNull` is a real value and
+// this package can construct one.  What it may never do is MATCH one:
+// `id_equals(JrpcIdNull, JrpcIdNull)` is FALSE, because two responses
+// that both failed to read an id are not answers to each other's
+// request.  That single false is the whole reason this module exists
+// rather than a comparison written inline.
+
+use std.json
+use jrpcerr
+
+// A request identifier: the three things section 4 permits.
+//
+// ```novo
+// use jrpcid
+//
+// fn main() [io]
+//     println(jrpcid.id_text(JrpcIdInt(7)))             // 7
+// ```
+pub enum JrpcId
+    // A string id.  Compared byte for byte; no case folding, no
+    // trimming, no numeric coercion.
+    JrpcIdStr(value: Str)
+    // An integer id.  A JSON number with no fractional part and no
+    // exponent, inside the signed 64-bit range.
+    JrpcIdInt(value: Int)
+    // The null id.  Produced by a server whose peer sent something it
+    // could not read an id out of, and never equal to anything,
+    // itself included.
+    JrpcIdNull
+
+// A string id.
+//
+// ```novo
+// use jrpcid
+//
+// fn main() [io]
+//     println(jrpcid.id_text(jrpcid.id_str("init-1")))  // "init-1"
+// ```
+pub fn id_str(value: Str) -> JrpcId []
+    todo("jsonrpc-nv.jrpcid.id_str")
+
+// An integer id.
+//
+// ```novo
+// use jrpcid
+//
+// fn main() [io]
+//     println(jrpcid.id_text(jrpcid.id_int(42)))        // 42
+// ```
+pub fn id_int(value: Int) -> JrpcId []
+    todo("jsonrpc-nv.jrpcid.id_int")
+
+// The null id, for a response whose request could not be read.
+//
+// ```novo
+// use jrpcid
+//
+// fn main() [io]
+//     println("${jrpcid.is_null(jrpcid.id_null())}")    // true
+// ```
+pub fn id_null() -> JrpcId []
+    todo("jsonrpc-nv.jrpcid.id_null")
+
+// Whether an id is the null one.
+//
+// A server keeping a table of outstanding requests asks this before it
+// inserts: a null id can never be looked up again, so a request
+// carrying one is a request whose response can never be routed.
+//
+// ```novo
+// use jrpcid
+//
+// fn main() [io]
+//     println("${jrpcid.is_null(JrpcIdStr("a"))}")      // false
+// ```
+pub fn is_null(id: JrpcId) -> Bool []
+    todo("jsonrpc-nv.jrpcid.is_null")
+
+// Whether a response's id answers a request's id.
+//
+// Exact: same arm, same value.  `JrpcIdStr("1")` does not match
+// `JrpcIdInt(1)`, because the specification treats them as two ids and
+// a client is free to have both outstanding.
+//
+// FALSE FOR TWO NULLS.  A null id means "the id could not be
+// determined", and two undetermined ids are not the same id.  A client
+// that matched them would deliver a parse-error response to whichever
+// request happened to be first in its table.
+//
+// ```novo
+// use jrpcid
+//
+// fn main() [io]
+//     println("${jrpcid.id_equals(JrpcIdInt(1), JrpcIdInt(1))}")        // true
+//     println("${jrpcid.id_equals(JrpcIdInt(1), JrpcIdStr("1"))}")      // false
+//     println("${jrpcid.id_equals(JrpcIdNull, JrpcIdNull)}")            // false
+// ```
+pub fn id_equals(a: JrpcId, b: JrpcId) -> Bool []
+    todo("jsonrpc-nv.jrpcid.id_equals")
+
+// The id as text, for a log or a table key: `"7"`, `"\"init-1\""`,
+// `"null"`.
+//
+// A string id is rendered WITH its quotes, so that the id `1` and the
+// id `"1"` do not print the same — which is what makes a log of a
+// mixed-type client readable at all.
+//
+// ```novo
+// use jrpcid
+//
+// fn main() [io]
+//     println(jrpcid.id_text(JrpcIdStr("a")))           // "a"
+// ```
+pub fn id_text(id: JrpcId) -> Str []
+    todo("jsonrpc-nv.jrpcid.id_text")
+
+// The id as its JSON value, ready to be a message's `id` member.
+//
+// ```novo
+// use std.json
+// use jrpcid
+//
+// fn main() [io]
+//     println(json.stringify(jrpcid.id_to_json(JrpcIdInt(3))))   // 3
+// ```
+pub fn id_to_json(id: JrpcId) -> JsonValueH []
+    todo("jsonrpc-nv.jrpcid.id_to_json")
+
+// An id read out of a JSON value.
+//
+// A string is `JrpcIdStr`, a null is `JrpcIdNull`, and an integral
+// number inside the 64-bit range is `JrpcIdInt`.  Everything else —
+// an object, an array, a boolean, and a number with a fractional part
+// — is `JrpcBadId`.
+//
+// ```novo
+// use std.json
+// use jrpcid
+//
+// fn main() [io]
+//     match json.parse("12")
+//         None    => println("not json")
+//         Some(v) =>
+//             match jrpcid.id_from_json(v)
+//                 Ok(i)  => println(jrpcid.id_text(i))
+//                 Err(f) => println(f.message())
+// ```
+pub fn id_from_json(v: JsonValueH) -> Result<JrpcId, jrpcerr.JrpcFault> []
+    todo("jsonrpc-nv.jrpcid.id_from_json")
+
+// The next id in a monotonic sequence, given the last one.
+//
+// A client needs a fresh id per request and the specification says
+// nothing about how to pick one, so every client writes the same
+// counter.  This is that counter: `JrpcIdInt(n)` answers
+// `JrpcIdInt(n + 1)`, and any other arm answers `JrpcIdInt(1)` — so a
+// client that started from a string id or from nothing still gets a
+// usable sequence rather than a fault it has to handle.
+//
+// ```novo
+// use jrpcid
+//
+// fn main() [io]
+//     println(jrpcid.id_text(jrpcid.next_id(JrpcIdInt(4))))   // 5
+// ```
+pub fn next_id(last: JrpcId) -> JrpcId []
+    todo("jsonrpc-nv.jrpcid.next_id")

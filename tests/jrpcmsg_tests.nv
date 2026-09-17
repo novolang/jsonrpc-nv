@@ -1,0 +1,258 @@
+// jrpcmsg_tests.nv — the API suite for the identifiers, the messages
+// and the batch rules.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: jsonrpc-nv.<module>.<fn>`.
+//
+// THE ASSERTIONS ARE THE SPECIFICATION'S OWN, section by section.
+// JSON-RPC 2.0 is four pages long and most of the mistakes
+// implementations make are in two paragraphs of it: section 4.1's
+// definition of a notification as a request object with no id member,
+// and section 6's rule that a server with no responses to send sends
+// nothing rather than an empty array.  Both are below, as tests, with
+// the section quoted beside them.
+
+use std.test
+use std.list
+use std.json
+use jrpcerr
+use jrpcid
+use jrpcmsg
+
+@test
+fn test_the_three_id_shapes_are_three_ids() [io]
+    // Section 4: "An identifier established by the Client that MUST
+    // contain a String, Number, or NULL value if included."
+    test.case("a string id and an integer id of the same digits differ")
+    test.assert(not jrpcid.id_equals(jrpcid.id_str("1"), jrpcid.id_int(1)))
+
+    test.case("the same arm and the same value match")
+    test.assert(jrpcid.id_equals(jrpcid.id_int(1), jrpcid.id_int(1)))
+    test.assert(jrpcid.id_equals(jrpcid.id_str("a"), jrpcid.id_str("a")))
+
+    test.case("and different values do not")
+    test.assert(not jrpcid.id_equals(jrpcid.id_int(1), jrpcid.id_int(2)))
+
+@test
+fn test_two_null_ids_are_not_the_same_id() [io]
+    // Section 5: "If there was an error in detecting the id in the
+    // Request object (e.g. Parse error/Invalid Request), it MUST be
+    // Null."  Two responses that both failed to read an id are not
+    // answers to each other's request.
+    test.case("null is a real id a server can construct")
+    test.assert(jrpcid.is_null(jrpcid.id_null()))
+
+    test.case("and it matches nothing, itself included")
+    test.assert(not jrpcid.id_equals(jrpcid.id_null(), jrpcid.id_null()))
+    test.assert(not jrpcid.id_equals(jrpcid.id_null(), jrpcid.id_int(1)))
+
+@test
+fn test_a_fractional_id_is_refused_rather_than_rounded() [io]
+    // Section 4: "Numbers SHOULD NOT contain fractional parts."  An id
+    // that cannot be returned unchanged is an id that cannot be
+    // matched, so this package refuses it at the decode.
+    test.case("an integral number is an integer id")
+    match json.parse("12")
+        None    => test.fail("12 is json")
+        Some(v) =>
+            match jrpcid.id_from_json(v)
+                Err(_) => test.fail("12 is a legal id")
+                Ok(i)  => test.assert(jrpcid.id_equals(i, jrpcid.id_int(12)))
+
+    test.case("a fractional one is JrpcBadId")
+    match json.parse("1.5")
+        None    => test.fail("1.5 is json")
+        Some(v) =>
+            match jrpcid.id_from_json(v)
+                Ok(_)  => test.fail("a fractional id is refused")
+                Err(f) => test.assert(jrpcerr.kind_name(f.kind)
+                                      == jrpcerr.kind_name(JrpcBadId))
+
+    test.case("and so is an object")
+    match json.parse("{}")
+        None    => test.fail("{} is json")
+        Some(v) =>
+            match jrpcid.id_from_json(v)
+                Ok(_)  => test.fail("an object is not an id")
+                Err(_) => test.assert(true)
+
+@test
+fn test_the_notification_is_the_absence_of_the_id() [io]
+    // Section 4.1: "A Notification is a Request object without an `id`
+    // member."
+    test.case("a notification has no id")
+    let n = jrpcmsg.notification("exit", None)
+    test.assert(jrpcmsg.is_notification(n))
+    match n.id
+        Some(_) => test.fail("a notification has no id")
+        None    => test.assert(true)
+
+    test.case("a call has one, and is not a notification")
+    let c = jrpcmsg.call(jrpcid.id_int(1), "initialize", None)
+    test.assert(not jrpcmsg.is_notification(c))
+    test.assert(c.method == "initialize")
+
+@test
+fn test_the_rpc_prefix_is_reserved() [io]
+    // Section 4: "Method names that begin with the word rpc followed
+    // by a period character ... are reserved for rpc-internal methods
+    // and extensions and MUST NOT be used for anything else."
+    test.case("rpc. is reserved")
+    test.assert(jrpcmsg.is_reserved_method("rpc.discover"))
+    test.assert(jrpcmsg.is_reserved_method("rpc."))
+
+    test.case("a name that merely starts with rpc is not")
+    test.assert(not jrpcmsg.is_reserved_method("rpcfoo"))
+    test.assert(not jrpcmsg.is_reserved_method("textDocument/hover"))
+
+@test
+fn test_params_may_only_be_an_array_or_an_object() [io]
+    // Section 4.2: "If present, parameters for the rpc call MUST be
+    // provided as a Structured value.  Either by-position through an
+    // Array or by-name through an Object."
+    test.case("an array and an object are structured")
+    test.assert(jrpcmsg.params_ok(json.array([])))
+    test.assert(jrpcmsg.params_ok(json.object([])))
+
+    test.case("a number, a string, a boolean and a null are not")
+    test.assert(not jrpcmsg.params_ok(json.int(4)))
+    test.assert(not jrpcmsg.params_ok(json.string("x")))
+    test.assert(not jrpcmsg.params_ok(json.bool(true)))
+    test.assert(not jrpcmsg.params_ok(json.null()))
+
+@test
+fn test_a_response_carries_exactly_one_outcome() [io]
+    // Section 5: "Either the result member or error member MUST be
+    // included, but both members MUST NOT be included."  The type is
+    // an enum, so the two mistakes are unwritable and there is nothing
+    // to assert but that each arm is what it says.
+    test.case("a success is a result and not a failure")
+    let good = jrpcmsg.ok(jrpcid.id_int(1), json.null())
+    test.assert(jrpcmsg.is_success(good.outcome))
+    test.assert(not jrpcmsg.is_failure(good.outcome))
+
+    test.case("a null result is a result, not an absence")
+    match good.outcome
+        JrpcFailure(_) => test.fail("null is a result")
+        JrpcResult(v)  => test.assert(json.is_null(v))
+
+    test.case("a failure is an error and not a result")
+    let bad = jrpcmsg.failed(jrpcid.id_int(1), jrpcerr.method_not_found("x"))
+    test.assert(jrpcmsg.is_failure(bad.outcome))
+    test.assert(not jrpcmsg.is_success(bad.outcome))
+
+@test
+fn test_a_response_answers_a_request_by_exact_id() [io]
+    test.case("same id, so it answers")
+    let q = jrpcmsg.call(jrpcid.id_int(1), "initialize", None)
+    test.assert(jrpcmsg.answers(q, jrpcmsg.ok(jrpcid.id_int(1), json.null())))
+
+    test.case("a different id does not")
+    test.assert(not jrpcmsg.answers(q, jrpcmsg.ok(jrpcid.id_int(2), json.null())))
+
+    test.case("and the same digits as a string do not")
+    test.assert(not jrpcmsg.answers(q, jrpcmsg.ok(jrpcid.id_str("1"), json.null())))
+
+    test.case("a parse-error response answers no outstanding request")
+    let e = jrpcmsg.failed(jrpcid.id_null(), jrpcerr.parse_error())
+    test.assert(not jrpcmsg.answers(q, e))
+
+    test.case("and a notification is answered by nothing at all")
+    let n = jrpcmsg.notification("exit", None)
+    test.assert(not jrpcmsg.answers(n, jrpcmsg.ok(jrpcid.id_int(1), json.null())))
+
+@test
+fn test_an_empty_batch_cannot_be_constructed() [io]
+    // Section 6: "If the batch rpc call itself fails to be recognized
+    // as an valid JSON or as an Array with at least one value, the
+    // response from the Server MUST be a single Response object."
+    test.case("an empty batch is refused at the constructor")
+    match jrpcmsg.batch([])
+        Ok(_)  => test.fail("an empty batch is an Invalid Request")
+        Err(f) => test.assert(jrpcerr.kind_name(f.kind)
+                              == jrpcerr.kind_name(JrpcEmptyBatch))
+
+    test.case("a batch of one is accepted, and is a batch")
+    let m = JrpcRequestMsg(jrpcmsg.call(jrpcid.id_int(1), "a", None))
+    match jrpcmsg.batch([m])
+        Err(_) => test.fail("one message is a legal batch")
+        Ok(b)  =>
+            test.assert(jrpcmsg.is_batch(b))
+            test.assert(jrpcmsg.message_count(b) == 1)
+            test.assert(list.len(jrpcmsg.messages_of(b)) == 1)
+
+@test
+fn test_a_batch_of_notifications_needs_no_reply_at_all() [io]
+    // Section 6: "If there are no Response objects contained within
+    // the Response array as it is to be sent to the client, the server
+    // MUST NOT return an empty Array and should return nothing at
+    // all."  Zero means send no bytes.
+    let note = JrpcRequestMsg(jrpcmsg.notification("exit", None))
+    let call = JrpcRequestMsg(jrpcmsg.call(jrpcid.id_int(1), "initialize", None))
+
+    test.case("a single notification needs no reply")
+    test.assert(jrpcmsg.replies_needed(jrpcmsg.single(note)) == 0)
+
+    test.case("a single call needs one")
+    test.assert(jrpcmsg.replies_needed(jrpcmsg.single(call)) == 1)
+
+    test.case("a batch of nothing but notifications needs none")
+    match jrpcmsg.batch([note, note, note])
+        Err(_) => test.fail("three notifications are a legal batch")
+        Ok(b)  => test.assert(jrpcmsg.replies_needed(b) == 0)
+
+    test.case("a mixed batch needs one per call and no more")
+    match jrpcmsg.batch([note, call, note, call])
+        Err(_) => test.fail("a mixed batch is legal")
+        Ok(b)  =>
+            test.assert(jrpcmsg.message_count(b) == 4)
+            test.assert(jrpcmsg.replies_needed(b) == 2)
+
+@test
+fn test_a_single_is_not_a_batch_of_one() [io]
+    // The distinction decides the SHAPE of the answer: a batch of one
+    // call is answered with a one-element array, and a single call
+    // with an object.
+    let call = JrpcRequestMsg(jrpcmsg.call(jrpcid.id_int(1), "initialize", None))
+
+    test.case("a single is not a batch")
+    test.assert(not jrpcmsg.is_batch(jrpcmsg.single(call)))
+
+    test.case("a batch of one is")
+    match jrpcmsg.batch([call])
+        Err(_) => test.fail("legal")
+        Ok(b)  => test.assert(jrpcmsg.is_batch(b))
+
+    test.case("and both carry one message")
+    test.assert(jrpcmsg.message_count(jrpcmsg.single(call)) == 1)
+
+@test
+fn test_the_version_is_the_string_two_point_zero() [io]
+    // Section 4: "jsonrpc: A String specifying the version of the
+    // JSON-RPC protocol.  MUST be exactly "2.0"."
+    test.case("exactly 2.0")
+    test.assert(jrpcmsg.version() == "2.0")
+
+@test
+fn test_a_message_knows_which_direction_it_is() [io]
+    test.case("a request message is a request")
+    let r = JrpcRequestMsg(jrpcmsg.notification("exit", None))
+    test.assert(jrpcmsg.is_request(r))
+
+    test.case("a response message is not")
+    let s = JrpcResponseMsg(jrpcmsg.ok(jrpcid.id_int(1), json.null()))
+    test.assert(not jrpcmsg.is_request(s))
+
+@test
+fn test_next_id_gives_a_client_a_sequence_from_anywhere() [io]
+    test.case("an integer id advances")
+    test.assert(jrpcid.id_equals(jrpcid.next_id(jrpcid.id_int(4)),
+                                 jrpcid.id_int(5)))
+
+    test.case("a string id starts the sequence rather than failing")
+    test.assert(jrpcid.id_equals(jrpcid.next_id(jrpcid.id_str("a")),
+                                 jrpcid.id_int(1)))
+
+    test.case("and so does the null id")
+    test.assert(jrpcid.id_equals(jrpcid.next_id(jrpcid.id_null()),
+                                 jrpcid.id_int(1)))
