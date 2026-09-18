@@ -108,8 +108,8 @@ fn main() [io]
                     // The content, decoded. A text this server cannot
                     // read becomes the response it must send back.
                     match jrpccodec.decode_or_error(text)
-                        Err(reply) => println("refused: ${jrpccodec.encode_response(reply)}")
-                        Ok(env)    => println("${jrpcmsg.replies_needed(env)} reply needed")
+                        JrpcReadRefusal(reply, _) => println("refused: ${jrpccodec.encode_response(reply)}")
+                        JrpcReadEnvelope(env)     => println("${jrpcmsg.replies_needed(env)} reply needed")
 ```
 
 Build and test with `novo pkg build` and `novo test`. Today `novo test`
@@ -133,9 +133,14 @@ specification the implementation will have to satisfy.
 frame, not a stream, and answers the envelope or the fault.
 
 **`jrpccodec.decode_or_error` reads one message and prepares the
-refusal.** It answers either the envelope or the response the server
-must send because it could not read the text. A server's read loop
-written against this one makes no protocol decisions of its own.
+refusal.** It answers a `JrpcRead`: either the envelope, or the
+response the server must send because it could not read the text,
+together with the fault that produced it. It is not a `Result` —
+neither arm is a failure to propagate, and the refusal is a message to
+send rather than an error to raise. A server's read loop written
+against this one makes no protocol decisions of its own; it asks
+`jrpcerr.is_framing_fault` of the refusal's fault to decide between
+answering and closing.
 
 **`jrpcframe.feed` takes bytes and answers at most one message.**
 `jrpcframe.take` answers the next message already buffered, adding

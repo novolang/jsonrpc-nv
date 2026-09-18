@@ -152,6 +152,15 @@ pub struct JrpcError
     // Defined by the method, not by the protocol.
     data: ?JsonValueH
 
+// `JrpcError` is an `Error`, which is what lets
+// `Result<T, JrpcError>` exist at all (SPEC section 3.4).
+impl Error for JrpcError
+    // Section 5.1's `message` member.
+    //
+    // Panics with `not implemented` until the bodies land.
+    fn message(self) -> Str
+        todo("jsonrpc-nv.JrpcError.message")
+
 // A fault, made.
 //
 // `offset` is -1, meaning the fault is not about a position; use

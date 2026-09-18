@@ -52,6 +52,17 @@ doc comment; every body is `todo()`; the release is recorded
   of `JrpcEnvelope` is a message the specification permits.
   `decode_or_error` hands a server either the envelope or the response
   it must send, so a read loop makes no protocol decisions of its own.
+  It answers a `JrpcRead` and **not** a `Result`: both arms are values
+  the caller uses, and a refusal is a message to SEND rather than a
+  failure to propagate. The refusal carries the fault beside the
+  response, so `jrpcerr.is_framing_fault` can still say whether to
+  answer or close — a question the earlier shape, which handed back
+  only the response, left a caller unable to ask.
+- `jrpcerr.JrpcError` is an `Error`. Section 5.1's error object is what
+  a failed method answers with, so it is what a `Result`'s error
+  position holds in a server built on this package (lsp-nv's parameter
+  readers are the first), and SPEC § 3.4 requires the impl for that to
+  be legal. Its `message` is section 5.1's `message` member.
 
 ### Known
 

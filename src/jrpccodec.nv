@@ -24,6 +24,16 @@
 // answers either the envelope or the response to send, and a server's
 // read loop is then two arms with no protocol decisions in either.
 //
+// IT ANSWERS A `JrpcRead` AND NOT A `Result`
+//
+// Both of its arms are values the caller USES; neither is a failure to
+// propagate.  A refusal is a response the server SENDS — the one
+// message section 5 obliges it to send — so putting it in an `Err`
+// would say the opposite of what the function means, and `?` on it
+// would throw away the very thing it was called for.  `decode` is the
+// fallible one, and its `Err` is a `JrpcFault`, which is this
+// package's error type.
+//
 // IT DOES NOT PARSE JSON ITSELF
 //
 // The value type is `std.json`'s, and so is the parser.  This module
@@ -99,6 +109,38 @@ pub fn decode_value(v: JsonValueH) -> Result<jrpcmsg.JrpcEnvelope, jrpcerr.JrpcF
 pub fn decode_message(v: JsonValueH) -> Result<jrpcmsg.JrpcMessage, jrpcerr.JrpcFault> []
     todo("jsonrpc-nv.jrpccodec.decode_message")
 
+// What a read produced: the envelope, or the refusal to send instead.
+//
+// `decode_or_error`'s answer, and the reason that function is not a
+// `Result`.  The second arm is not a failure — it is a MESSAGE, the
+// error response section 5 obliges the server to send, already built —
+// and an `Err` holding a value the caller transmits reads as the
+// opposite of what happened.
+//
+// The refusal carries the fault as well as the response, because the
+// two answer different questions and a server needs both: the
+// response is what to send, and the fault is whether to send it at
+// all — `jrpcerr.is_framing_fault` on its kind is what says to close
+// the connection instead, and a caller holding only the response
+// cannot ask.
+//
+// ```novo
+// use jrpccodec
+//
+// fn main() [io]
+//     match jrpccodec.decode_or_error("not json at all")
+//         JrpcReadEnvelope(e)   => println(jrpccodec.encode(e))
+//         JrpcReadRefusal(r, _) => println(jrpccodec.encode_response(r))
+// ```
+pub enum JrpcRead
+    // The text decoded, and there is nothing to send.
+    JrpcReadEnvelope(envelope: jrpcmsg.JrpcEnvelope)
+    // The text did not decode.  `response` is what section 5 requires
+    // the server to send — `jrpcerr.error_for_fault` mapped, id
+    // `JrpcIdNull` — and `fault` is why, for the log and for
+    // `jrpcerr.is_framing_fault`.
+    JrpcReadRefusal(response: jrpcmsg.JrpcResponse, fault: jrpcerr.JrpcFault)
+
 // The envelope, or the response a server must send because it could
 // not be read.
 //
@@ -109,19 +151,25 @@ pub fn decode_message(v: JsonValueH) -> Result<jrpcmsg.JrpcMessage, jrpcerr.Jrpc
 // `JrpcIdNull`, and the caller has a value it can encode and send with
 // no further protocol reasoning.
 //
-// A framing fault is still answered here, so the caller can log a
-// response it will not send — `jrpcerr.is_framing_fault` is the check
-// that says to close the connection instead.
+// A framing fault is answered here too, so the caller can log a
+// response it will not send — `jrpcerr.is_framing_fault` on the
+// refusal's fault is the check that says to close the connection
+// instead.
 //
 // ```novo
+// use jrpcerr
 // use jrpccodec
 //
 // fn main() [io]
 //     match jrpccodec.decode_or_error("not json at all")
-//         Ok(_)  => println("decoded")
-//         Err(r) => println(jrpccodec.encode_response(r))
+//         JrpcReadEnvelope(e)   => println(jrpccodec.encode(e))
+//         JrpcReadRefusal(r, f) =>
+//             if jrpcerr.is_framing_fault(f.kind)
+//                 println("out of step; close")
+//             else
+//                 println(jrpccodec.encode_response(r))
 // ```
-pub fn decode_or_error(text: Str) -> Result<jrpcmsg.JrpcEnvelope, jrpcmsg.JrpcResponse> []
+pub fn decode_or_error(text: Str) -> JrpcRead []
     todo("jsonrpc-nv.jrpccodec.decode_or_error")
 
 // The envelope as the text of one message.

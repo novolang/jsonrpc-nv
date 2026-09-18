@@ -302,17 +302,19 @@ fn test_the_reserved_codes_are_the_specifications() [io]
 fn test_decode_or_error_hands_back_the_response_to_send() [io]
     test.case("bad text becomes a response with the null id")
     match jrpccodec.decode_or_error("not json")
-        Ok(_)  => test.fail("that is not json")
-        Err(r) =>
+        JrpcReadEnvelope(_)   => test.fail("that is not json")
+        JrpcReadRefusal(r, f) =>
             test.assert(jrpcid.is_null(r.id))
+            test.assert(jrpcerr.kind_name(f.kind)
+                        == jrpcerr.kind_name(JrpcNotJson))
             match r.outcome
                 JrpcResult(_)  => test.fail("a fault is an error outcome")
                 JrpcFailure(e) => test.assert(e.code == -32700)
 
     test.case("good text decodes and nothing is to be sent")
     match jrpccodec.decode_or_error("{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}")
-        Err(_) => test.fail("that is a legal notification")
-        Ok(e)  => test.assert(jrpcmsg.replies_needed(e) == 0)
+        JrpcReadRefusal(_, _) => test.fail("that is a legal notification")
+        JrpcReadEnvelope(e)   => test.assert(jrpcmsg.replies_needed(e) == 0)
 
 @test
 fn test_no_replies_is_nothing_and_not_an_empty_array() [io]
