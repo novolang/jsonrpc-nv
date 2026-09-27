@@ -12,12 +12,6 @@ them.
 [dap-nv](https://novo-lang.org/packages/dap-nv) are built on this
 package.
 
-**Status: NOT IMPLEMENTED — interface only.** Every function is
-declared with its full signature, but every body is a `todo()` that
-panics when called. The package is published so its design can be
-reviewed and depended on before it is implemented. Version 0.1.0 will
-be the first working release.
-
 ## What JSON-RPC is
 
 A **request** is a JSON object with four members. `jsonrpc` is the
@@ -110,12 +104,8 @@ fn main() [io]
                     match jrpccodec.decode_or_error(text)
                         JrpcReadRefusal(reply, _) => println("refused: ${jrpccodec.encode_response(reply)}")
                         JrpcReadEnvelope(env)     => println("${jrpcmsg.replies_needed(env)} reply needed")
+                        JrpcReadMixed(ms, rs)     => println("${ms.len()} to answer, ${rs.len()} refused")
 ```
-
-Build and test with `novo pkg build` and `novo test`. Today `novo test`
-fails on purpose: every test reaches a
-`not implemented: jsonrpc-nv.<module>.<fn>` panic. The tests are the
-specification the implementation will have to satisfy.
 
 ## What the package contains
 
@@ -133,14 +123,14 @@ specification the implementation will have to satisfy.
 frame, not a stream, and answers the envelope or the fault.
 
 **`jrpccodec.decode_or_error` reads one message and prepares the
-refusal.** It answers a `JrpcRead`: either the envelope, or the
-response the server must send because it could not read the text,
-together with the fault that produced it. It is not a `Result` —
-neither arm is a failure to propagate, and the refusal is a message to
-send rather than an error to raise. A server's read loop written
-against this one makes no protocol decisions of its own; it asks
-`jrpcerr.is_framing_fault` of the refusal's fault to decide between
-answering and closing.
+refusals.** It answers a `JrpcRead` with one of three arms: the
+envelope; the response the server must send because it could not read
+the text, together with the fault that produced it; or, for a batch
+some of whose members are not valid, the members that are and a
+refusal for each of the others. It is not a `Result`, because a
+refusal is a message to send rather than an error to raise. A server's
+read loop written against it asks `jrpcerr.is_framing_fault` of a
+refusal's fault to decide between answering and closing.
 
 **`jrpcframe.feed` takes bytes and answers at most one message.**
 `jrpcframe.take` answers the next message already buffered, adding
@@ -180,26 +170,34 @@ buffer.
 9. **Method names beginning `rpc.` are reserved** (section 4).
    `jrpcmsg.is_reserved_method` is the check to run at start-up.
 10. **Only text that is not JSON is a Parse error** (section 5.1).
-    Everything that parsed and is not a valid request object is an
-    Invalid Request. `jrpcerr.error_for_fault` applies the mapping.
-11. **A server error code must be inside -32099 to -32000** (section
+    `params` of the wrong shape is Invalid params, and everything else
+    that parsed and is not a valid request object is an Invalid
+    Request. `jrpcerr.error_for_fault` applies the mapping.
+11. **A refusal carries the request's id when it can be read**
+    (section 5). The null id is for a request whose id could not be
+    determined: text that is not JSON, or an `id` of the wrong type.
+12. **Each invalid member of a batch is answered on its own** (section
+    6). `decode_or_error` answers `JrpcReadMixed`: the valid members to
+    dispatch, and a refusal for each invalid one, to go into the
+    response array beside the answers.
+13. **A server error code must be inside -32099 to -32000** (section
     5.1). `jrpcerr.server_error` refuses one outside that range rather
     than clamping it. An application code outside the whole reserved
     block needs no permission: `jrpcerr.error` takes any code.
-12. **`Content-Length` counts bytes, not characters.** A message
+14. **`Content-Length` counts bytes, not characters.** A message
     holding one character outside ASCII is longer in bytes than in
     characters, and a framer that wrote the character count truncates
     it. `jrpcframe.content_length` is the count to write.
-13. **A framing fault means close the connection.** A message fault
+15. **A framing fault means close the connection.** A message fault
     leaves the byte stream in step, so the server answers an error and
     reads the next frame. A framing fault does not, so a server that
     answers and keeps reading has resynchronised on whatever bytes
     happened to follow. `jrpcerr.is_framing_fault` tells the two apart.
-14. **Tell the reader when the peer closed.** `jrpcframe.finish` is
+16. **Tell the reader when the peer closed.** `jrpcframe.finish` is
     what turns a close with a half-read frame into `JrpcTruncated`. A
     close with nothing buffered is an ordinary end of connection and no
     fault.
-15. **The two limits are the caller's.** A header section with no blank
+17. **The two limits are the caller's.** A header section with no blank
     line and a `Content-Length` of nine quintillion are both denial of
     service costing the attacker one connection. The content limit is
     checked when the header is read, before any buffer is grown.
@@ -241,37 +239,31 @@ buffer.
 ## Tests
 
 ```bash
+novo test tests/spec_tests.nv       # the specification's examples, and MCP traffic
 novo test tests/jrpcmsg_tests.nv    # ids, notifications, batches, outcomes
 novo test tests/jrpcframe_tests.nv  # the codec, the framing and the limits
+novo test tests/jrpcedge_tests.nv   # every fault, every header refusal
+novo test tests/jrpccover_tests.nv  # the accessors and conversions
+bash tests/coverage.sh              # line coverage over src/
 ```
 
-The normative source is the JSON-RPC 2.0 specification, and each
-assertion names the section it comes from. The framing assertions come
-from the Language Server Protocol's base protocol document. The
-reference implementations are the Python package `jsonrpcserver`, for
-the batch rules, and the Rust crate `jsonrpc-core`, for the id type.
+The normative source is the JSON-RPC 2.0 specification.
+`spec_tests.nv` sends every example of its section 7, verbatim, to a
+small server written against this package and compares each reply with
+the specification's as a JSON value, a batch reply in any order. It
+also reads the requests this project's MCP test scripts send and the
+responses its MCP server answered them with, through the framing fed
+one byte at a time, and checks that each decodes and encodes back to
+the same value and that each response answers its call. The framing
+assertions come from the Language Server Protocol's base protocol
+document.
 
-The suite asserts that a notification has no id, that a batch of
+The suites assert that a notification has no id, that a batch of
 notifications requires no reply at all, that an empty batch is refused,
 that the id `1` does not match the id `"1"`, that two null ids do not
-match each other, that a fractional id is refused, that only
-non-JSON text is a Parse error, that a frame fed in pieces produces one
-message, and that `Content-Length` counts bytes.
-
-The tests compile today and fail at run, each on the
-`not implemented: jsonrpc-nv.<module>.<fn>` panic that is its body.
-That is the expected state of an interface release. They turn green one
-at a time as bodies land.
-
-## Implementation status
-
-| Item | Implemented |
-| --- | --- |
-| `jrpcerr` — the error object, the codes, the faults | the types are declared; every body is a `todo()` |
-| `jrpcid` — the identifier and its matching rule | the types are declared; every body is a `todo()` |
-| `jrpcmsg` — the request, the response, the batch | the types are declared; every body is a `todo()` |
-| `jrpccodec` — text to values and back | every body is a `todo()` |
-| `jrpcframe` — the `Content-Length` framing | the types are declared; every body is a `todo()` |
+match each other, that a fractional id is refused, that only non-JSON
+text is a Parse error, that a frame fed in pieces produces one message,
+and that `Content-Length` counts bytes.
 
 ## Licence
 

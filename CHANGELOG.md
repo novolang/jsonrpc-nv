@@ -5,6 +5,48 @@ All notable changes to jsonrpc-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## [0.1.0] — 2026-09-27
+
+The first implementation of the interface published as 0.0.1: the
+error object and the faults, the ids, the messages, the codec and the
+Content-Length framing.
+
+### Behaviour the interface left open
+
+- `error_for_fault` answers -32700 for text that is not JSON and for a
+  framing fault, -32602 Invalid params for `params` of the wrong shape,
+  and -32600 Invalid Request for everything else that parsed.
+- A refusal carries the request's id when the text is an object whose
+  `id` can be read, and the null id otherwise (section 5).
+- `method_not_found`, `invalid_params` and `internal_error` carry their
+  argument as `data`.
+- An id or an error code is read only from a number written as an
+  integer inside the signed 64-bit range; `1.0`, `1e3` and
+  `9223372036854775808` are refused.
+- A header name must be RFC 9110 token characters; `Content-Length`
+  must be at most 18 decimal digits; a `Content-Type` charset of
+  `utf-8` or `utf8`, in any case and quoted or not, is accepted, and no
+  charset is accepted.
+- `id_text` renders a string id as JSON text, with its quotes.
+
+### Changes to the interface
+
+- `JrpcRead` gains `JrpcReadMixed(messages, refusals)`: a batch some of
+  whose members are not valid answers the valid members and a refusal
+  for each of the others, as section 6's examples require.
+- `jrpcerr.integral` is the rule ids and error codes are read by.
+
+### Toolchain
+
+- The toolchain floor is 0.13.0.
+
+### Tests
+
+- 57 tests in five suites, with 100% line coverage over `src/`
+  measured by `tests/coverage.sh`.  `spec_tests.nv` holds every example
+  of the specification's section 7 and this project's MCP server
+  traffic.
+
 ## [0.0.1] — 2026-09-17
 
 **The interface, published before anyone implements it.** Every public
