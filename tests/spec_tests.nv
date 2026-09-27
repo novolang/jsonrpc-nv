@@ -209,8 +209,7 @@ fn through_the_framing(text: Str) -> Str
         match jrpcframe.feed(r, [b])
             Ok(step) =>
                 r = step.reader
-                if let Some(m) = step.message
-                    got = m
+                got = step.message ?? got
             Err(f)   =>
                 got = f.message()
     got
