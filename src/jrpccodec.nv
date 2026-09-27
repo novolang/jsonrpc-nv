@@ -353,11 +353,9 @@ fn members_of(v: JsonValueH) -> JrpcRead
     var refusals: [jrpcmsg.JrpcResponse] = []
     for i in 0..(json.len(v) ?? 0)
         let item = json.index(v, i) ?? json.null()
-        let read = decode_message(item)
-        if let Ok(m) = read
-            list.push(messages, m)
-        if let Err(f) = read
-            list.push(refusals, jrpcmsg.failed(id_in(item), jrpcerr.error_for_fault(f)))
+        match decode_message(item)
+            Ok(m)  => list.push(messages, m)
+            Err(f) => list.push(refusals, jrpcmsg.failed(id_in(item), jrpcerr.error_for_fault(f)))
     JrpcReadMixed(messages: messages, refusals: refusals)
 
 // The id of an object whose `id` member is one, or the null id.
