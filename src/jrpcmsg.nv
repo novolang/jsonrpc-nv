@@ -55,7 +55,7 @@ use jrpcid
 //     println(jrpcmsg.version())                        // 2.0
 // ```
 pub fn version() -> Str []
-    todo("jsonrpc-nv.jrpcmsg.version")
+    "2.0"
 
 // A call to a method, section 4.
 //
@@ -165,7 +165,7 @@ pub enum JrpcEnvelope
 //     println(jrpcmsg.call(JrpcIdInt(1), "initialize", None).method)
 // ```
 pub fn call(id: JrpcId, method: Str, params: ?JsonValueH) -> JrpcRequest []
-    todo("jsonrpc-nv.jrpcmsg.call")
+    JrpcRequest { id: Some(id), method: method, params: params }
 
 // A notification: a request with no id, which the peer must not answer.
 //
@@ -176,7 +176,7 @@ pub fn call(id: JrpcId, method: Str, params: ?JsonValueH) -> JrpcRequest []
 //     println("${jrpcmsg.is_notification(jrpcmsg.notification("exit", None))}")
 // ```
 pub fn notification(method: Str, params: ?JsonValueH) -> JrpcRequest []
-    todo("jsonrpc-nv.jrpcmsg.notification")
+    JrpcRequest { id: None, method: method, params: params }
 
 // Whether a request is a notification — that is, whether its id is
 // absent.
@@ -188,7 +188,7 @@ pub fn notification(method: Str, params: ?JsonValueH) -> JrpcRequest []
 //     println("${jrpcmsg.is_notification(jrpcmsg.call(JrpcIdInt(1), "m", None))}")
 // ```
 pub fn is_notification(r: JrpcRequest) -> Bool []
-    todo("jsonrpc-nv.jrpcmsg.is_notification")
+    r.id == None
 
 // Whether the method name is one section 4 reserves for the protocol.
 //
@@ -205,7 +205,7 @@ pub fn is_notification(r: JrpcRequest) -> Bool []
 //     println("${jrpcmsg.is_reserved_method("rpc.discover")}")   // true
 // ```
 pub fn is_reserved_method(method: Str) -> Bool []
-    todo("jsonrpc-nv.jrpcmsg.is_reserved_method")
+    str.starts_with(method, "rpc.")
 
 // Whether a `params` value is one of the two shapes section 4.2
 // permits: an array or an object.
@@ -223,7 +223,8 @@ pub fn is_reserved_method(method: Str) -> Bool []
 //     println("${jrpcmsg.params_ok(json.int(4))}")               // false
 // ```
 pub fn params_ok(params: JsonValueH) -> Bool []
-    todo("jsonrpc-nv.jrpcmsg.params_ok")
+    let t = json.type_of(params)
+    t == "array" or t == "object"
 
 // A successful response.
 //
@@ -239,7 +240,7 @@ pub fn params_ok(params: JsonValueH) -> Bool []
 //     println("${jrpcmsg.is_success(jrpcmsg.ok(JrpcIdInt(1), json.null()).outcome)}")
 // ```
 pub fn ok(id: JrpcId, value: JsonValueH) -> JrpcResponse []
-    todo("jsonrpc-nv.jrpcmsg.ok")
+    JrpcResponse { id: id, outcome: JrpcResult(value: value) }
 
 // A failed response.
 //
@@ -252,7 +253,7 @@ pub fn ok(id: JrpcId, value: JsonValueH) -> JrpcResponse []
 //     println("${jrpcmsg.is_failure(r.outcome)}")       // true
 // ```
 pub fn failed(id: JrpcId, error: jrpcerr.JrpcError) -> JrpcResponse []
-    todo("jsonrpc-nv.jrpcmsg.failed")
+    JrpcResponse { id: id, outcome: JrpcFailure(error: error) }
 
 // Whether an outcome is a result.
 //
@@ -264,7 +265,9 @@ pub fn failed(id: JrpcId, error: jrpcerr.JrpcError) -> JrpcResponse []
 //     println("${jrpcmsg.is_success(JrpcResult(json.int(1)))}")   // true
 // ```
 pub fn is_success(o: JrpcOutcome) -> Bool []
-    todo("jsonrpc-nv.jrpcmsg.is_success")
+    match o
+        JrpcResult(_)  => true
+        JrpcFailure(_) => false
 
 // Whether an outcome is an error.
 //
@@ -276,7 +279,7 @@ pub fn is_success(o: JrpcOutcome) -> Bool []
 //     println("${jrpcmsg.is_failure(JrpcFailure(jrpcerr.invalid_request()))}")
 // ```
 pub fn is_failure(o: JrpcOutcome) -> Bool []
-    todo("jsonrpc-nv.jrpcmsg.is_failure")
+    not is_success(o)
 
 // Whether a message is a request or a notification.
 //
@@ -287,7 +290,9 @@ pub fn is_failure(o: JrpcOutcome) -> Bool []
 //     println("${jrpcmsg.is_request(JrpcRequestMsg(jrpcmsg.notification("e", None)))}")
 // ```
 pub fn is_request(m: JrpcMessage) -> Bool []
-    todo("jsonrpc-nv.jrpcmsg.is_request")
+    match m
+        JrpcRequestMsg(_)  => true
+        JrpcResponseMsg(_) => false
 
 // Whether a response answers a request.
 //
@@ -307,7 +312,9 @@ pub fn is_request(m: JrpcMessage) -> Bool []
 //     println("${jrpcmsg.answers(q, a)}")               // true
 // ```
 pub fn answers(request: JrpcRequest, response: JrpcResponse) -> Bool []
-    todo("jsonrpc-nv.jrpcmsg.answers")
+    match request.id
+        Some(i) => jrpcid.id_equals(i, response.id)
+        None    => false
 
 // One message, on its own.
 //
@@ -319,7 +326,7 @@ pub fn answers(request: JrpcRequest, response: JrpcResponse) -> Bool []
 //         JrpcRequestMsg(jrpcmsg.notification("e", None))))}")   // 1
 // ```
 pub fn single(m: JrpcMessage) -> JrpcEnvelope []
-    todo("jsonrpc-nv.jrpcmsg.single")
+    JrpcSingle(message: m)
 
 // A batch, refused when it is empty.
 //
@@ -339,7 +346,9 @@ pub fn single(m: JrpcMessage) -> JrpcEnvelope []
 //         Err(f) => println(f.message())
 // ```
 pub fn batch(messages: [JrpcMessage]) -> Result<JrpcEnvelope, jrpcerr.JrpcFault> []
-    todo("jsonrpc-nv.jrpcmsg.batch")
+    if list.len(messages) == 0
+        return Err(jrpcerr.fault(JrpcEmptyBatch, "[]"))
+    Ok(JrpcBatch(messages: list.clone(messages)))
 
 // How many messages an envelope carries.
 //
@@ -351,7 +360,7 @@ pub fn batch(messages: [JrpcMessage]) -> Result<JrpcEnvelope, jrpcerr.JrpcFault>
 //         JrpcRequestMsg(jrpcmsg.notification("e", None))))}")
 // ```
 pub fn message_count(e: JrpcEnvelope) -> Int []
-    todo("jsonrpc-nv.jrpcmsg.message_count")
+    list.len(messages_of(e))
 
 // How many responses this envelope requires.
 //
@@ -377,7 +386,14 @@ pub fn message_count(e: JrpcEnvelope) -> Int []
 //         Ok(b)  => println("${jrpcmsg.replies_needed(b)}")       // 0
 // ```
 pub fn replies_needed(e: JrpcEnvelope) -> Int []
-    todo("jsonrpc-nv.jrpcmsg.replies_needed")
+    var n = 0
+    for m in messages_of(e)
+        match m
+            JrpcRequestMsg(r)  =>
+                if not is_notification(r)
+                    n = n + 1
+            JrpcResponseMsg(_) => ()
+    n
 
 // The messages an envelope carries, whether it is a batch or not.
 //
@@ -394,7 +410,9 @@ pub fn replies_needed(e: JrpcEnvelope) -> Int []
 //     println("${list.len(jrpcmsg.messages_of(e))}")    // 1
 // ```
 pub fn messages_of(e: JrpcEnvelope) -> [JrpcMessage] []
-    todo("jsonrpc-nv.jrpcmsg.messages_of")
+    match e
+        JrpcSingle(m)  => [m]
+        JrpcBatch(ms)  => list.clone(ms)
 
 // Whether the envelope is a batch, which decides how the answer is
 // SHAPED.
@@ -412,4 +430,6 @@ pub fn messages_of(e: JrpcEnvelope) -> [JrpcMessage] []
 //         JrpcRequestMsg(jrpcmsg.notification("e", None))))}")    // false
 // ```
 pub fn is_batch(e: JrpcEnvelope) -> Bool []
-    todo("jsonrpc-nv.jrpcmsg.is_batch")
+    match e
+        JrpcSingle(_) => false
+        JrpcBatch(_)  => true

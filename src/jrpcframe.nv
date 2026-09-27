@@ -46,6 +46,7 @@
 // content limit is checked when the header is READ, before any content
 // buffer is grown, which is the whole point of checking it.
 
+use std.bytes
 use jrpcerr
 
 // What a reader refuses to grow past.
@@ -109,7 +110,7 @@ pub struct JrpcStep
 //     println("${jrpcframe.default_limits().max_headers}")
 // ```
 pub fn default_limits() -> JrpcLimits []
-    todo("jsonrpc-nv.jrpcframe.default_limits")
+    JrpcLimits { max_headers: 8 * 1024, max_content: 32 * 1024 * 1024 }
 
 // A header section of 512 bytes and content of 64 KiB.
 //
@@ -125,7 +126,7 @@ pub fn default_limits() -> JrpcLimits []
 //     println("${jrpcframe.small_limits().max_content}")
 // ```
 pub fn small_limits() -> JrpcLimits []
-    todo("jsonrpc-nv.jrpcframe.small_limits")
+    JrpcLimits { max_headers: 512, max_content: 64 * 1024 }
 
 // A reader holding nothing.
 //
@@ -137,7 +138,7 @@ pub fn small_limits() -> JrpcLimits []
 //     println("${jrpcframe.pending_len(r)}")            // 0
 // ```
 pub fn reader(limits: JrpcLimits) -> JrpcReader []
-    todo("jsonrpc-nv.jrpcframe.reader")
+    JrpcReader { limits: limits, pending: [], expected: 0 - 1 }
 
 // Adds bytes, and takes one message if the addition completed one.
 //
@@ -158,7 +159,7 @@ pub fn reader(limits: JrpcLimits) -> JrpcReader []
 //                 Some(_) => println("a message")
 // ```
 pub fn feed(r: JrpcReader, bytes: [u8]) -> Result<JrpcStep, jrpcerr.JrpcFault> []
-    todo("jsonrpc-nv.jrpcframe.feed")
+    take(JrpcReader { limits: r.limits, pending: list.concat(r.pending, bytes), expected: r.expected })
 
 // Takes one message if a complete one is already buffered, adding
 // nothing.
@@ -177,7 +178,20 @@ pub fn feed(r: JrpcReader, bytes: [u8]) -> Result<JrpcStep, jrpcerr.JrpcFault> [
 //         Ok(step) => println("${jrpcframe.pending_len(step.reader)}")
 // ```
 pub fn take(r: JrpcReader) -> Result<JrpcStep, jrpcerr.JrpcFault> []
-    todo("jsonrpc-nv.jrpcframe.take")
+    if r.expected < 0
+        let Some(at) = blank_line(r.pending) else return waiting_for_header(r)
+        if at > r.limits.max_headers
+            return Err(jrpcerr.fault(JrpcHeaderTooLarge, "${at} bytes of header"))
+        let n = content_length_of(list.slice(r.pending, 0, at))!
+        if n > r.limits.max_content
+            return Err(jrpcerr.fault(JrpcContentTooLarge, "Content-Length ${n}"))
+        let rest = list.slice(r.pending, at + 4, list.len(r.pending))
+        return take(JrpcReader { limits: r.limits, pending: rest, expected: n })
+    if list.len(r.pending) < r.expected
+        return Ok(JrpcStep { reader: r, message: None })
+    let body = text_of(list.slice(r.pending, 0, r.expected))
+    let rest = list.slice(r.pending, r.expected, list.len(r.pending))
+    Ok(JrpcStep { reader: JrpcReader { limits: r.limits, pending: rest, expected: 0 - 1 }, message: Some(body) })
 
 // Tells the reader the peer closed, and takes the last message.
 //
@@ -200,7 +214,10 @@ pub fn take(r: JrpcReader) -> Result<JrpcStep, jrpcerr.JrpcFault> []
 //                 Some(_) => println("one last message")
 // ```
 pub fn finish(r: JrpcReader) -> Result<JrpcStep, jrpcerr.JrpcFault> []
-    todo("jsonrpc-nv.jrpcframe.finish")
+    let step = take(r)!
+    if step.message != None or list.len(step.reader.pending) == 0
+        return Ok(step)
+    Err(jrpcerr.fault(JrpcTruncated, "${list.len(step.reader.pending)} byte(s) of an unfinished frame"))
 
 // How many bytes the reader is holding that have not become a message.
 //
@@ -214,7 +231,7 @@ pub fn finish(r: JrpcReader) -> Result<JrpcStep, jrpcerr.JrpcFault> []
 //     println("${jrpcframe.pending_len(jrpcframe.reader(jrpcframe.default_limits()))}")
 // ```
 pub fn pending_len(r: JrpcReader) -> Int []
-    todo("jsonrpc-nv.jrpcframe.pending_len")
+    list.len(r.pending)
 
 // How many more content bytes the reader needs to finish the message
 // it is in the middle of, or `None` when it is between messages.
@@ -231,7 +248,9 @@ pub fn pending_len(r: JrpcReader) -> Int []
 //         Some(n) => println("${n} more bytes")
 // ```
 pub fn awaiting(r: JrpcReader) -> ?Int []
-    todo("jsonrpc-nv.jrpcframe.awaiting")
+    if r.expected < 0
+        return None
+    Some(r.expected - list.len(r.pending))
 
 // A message's content framed for sending: the `Content-Length` header,
 // the blank line, and the content.
@@ -249,7 +268,7 @@ pub fn awaiting(r: JrpcReader) -> ?Int []
 //     println("${list.len(jrpcframe.frame("{}"))}")
 // ```
 pub fn frame(body: Str) -> [u8] []
-    todo("jsonrpc-nv.jrpcframe.frame")
+    bytes_of(header_text(content_length(body)) + body)
 
 // The same, with the `Content-Type` header both protocols define.
 //
@@ -265,7 +284,8 @@ pub fn frame(body: Str) -> [u8] []
 //     println("${list.len(jrpcframe.frame_with_content_type("{}"))}")
 // ```
 pub fn frame_with_content_type(body: Str) -> [u8] []
-    todo("jsonrpc-nv.jrpcframe.frame_with_content_type")
+    let head = "Content-Length: ${content_length(body)}\r\nContent-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\n"
+    bytes_of(head + body)
 
 // The number a `Content-Length` header must carry for this content:
 // its length in UTF-8 BYTES.
@@ -282,7 +302,7 @@ pub fn frame_with_content_type(body: Str) -> [u8] []
 //     println("${jrpcframe.content_length("{}")}")      // 2
 // ```
 pub fn content_length(body: Str) -> Int []
-    todo("jsonrpc-nv.jrpcframe.content_length")
+    str.len(body)
 
 // The header section a frame would carry for this content, as text.
 //
@@ -297,4 +317,84 @@ pub fn content_length(body: Str) -> Int []
 //     println(jrpcframe.header_text(2))
 // ```
 pub fn header_text(content_length: Int) -> Str []
-    todo("jsonrpc-nv.jrpcframe.header_text")
+    "Content-Length: ${content_length}\r\n\r\n"
+
+// ── reading a header section ─────────────────────────────────────────
+
+// Text as its UTF-8 bytes.
+fn bytes_of(text: Str) -> [u8]
+    bytes.to_byte_list(bytes.from_str(text))
+
+// Bytes as text, unchanged.
+fn text_of(xs: [u8]) -> Str
+    bytes.to_str(bytes.from_byte_list(xs))
+
+// The offset of the first CR LF CR LF, or `None`.
+fn blank_line(xs: [u8]) -> ?Int
+    let n = list.len(xs)
+    for i in 0..n - 3
+        if xs[i] == 13 and xs[i + 1] == 10 and xs[i + 2] == 13 and xs[i + 3] == 10
+            return Some(i)
+    None
+
+// A reader with no blank line yet: waiting, or past its header limit.
+fn waiting_for_header(r: JrpcReader) -> Result<JrpcStep, jrpcerr.JrpcFault>
+    if list.len(r.pending) > r.limits.max_headers
+        return Err(jrpcerr.fault(JrpcHeaderTooLarge, "${list.len(r.pending)} bytes and no blank line"))
+    Ok(JrpcStep { reader: r, message: None })
+
+// Whether a byte may appear in a header field name: RFC 9110 section
+// 5.6.2's token characters.
+fn token_char(c: Int) -> Bool
+    if c >= 'a' and c <= 'z' or c >= 'A' and c <= 'Z' or c >= '0' and c <= '9'
+        return true
+    str.contains("!#$%&'*+-.^_`|~", str.from_byte(c))
+
+// The `Content-Length` a header section declares, with every line
+// checked.
+fn content_length_of(head: [u8]) -> Result<Int, jrpcerr.JrpcFault>
+    var length = 0 - 1
+    var offset = 0
+    for line in str.split(text_of(head), "\r\n")
+        let colon = str.index(line, ":") ?? (0 - 1)
+        if colon <= 0
+            return Err(jrpcerr.fault_at(JrpcBadHeaderLine, line, offset))
+        let name = str.lower(str.slice(line, 0, colon))
+        for i in 0..colon
+            if not token_char(str.byte_at_or(line, i, 0))
+                return Err(jrpcerr.fault_at(JrpcBadHeaderLine, line, offset))
+        let value = str.trim(str.slice(line, colon + 1, str.len(line)))
+        if name == "content-length"
+            length = decimal(value)
+            if length < 0
+                return Err(jrpcerr.fault_at(JrpcBadContentLength, value, offset))
+        else if name == "content-type" and not utf8_charset(value)
+            return Err(jrpcerr.fault_at(JrpcBadCharset, value, offset))
+        offset = offset + str.len(line) + 2
+    if length < 0
+        return Err(jrpcerr.fault(JrpcNoContentLength, text_of(head)))
+    Ok(length)
+
+// A run of ASCII digits as a number, or -1 when it is empty, holds
+// anything else, or passes 18 digits.
+fn decimal(s: Str) -> Int
+    let n = str.len(s)
+    if n == 0 or n > 18
+        return 0 - 1
+    var v = 0
+    for i in 0..n
+        let d = str.byte_at_or(s, i, 0) - '0'
+        if d < 0 or d > 9
+            return 0 - 1
+        v = v * 10 + d
+    v
+
+// Whether a `Content-Type` value leaves the charset UTF-8: it names
+// none, or names `utf-8` or its older spelling `utf8`.
+fn utf8_charset(value: Str) -> Bool
+    for part in str.split(value, ";")
+        let p = str.lower(str.trim(part))
+        if str.starts_with(p, "charset=")
+            let cs = str.replace(str.slice(p, 8, str.len(p)), "\"", "")
+            return cs == "utf-8" or cs == "utf8"
+    true

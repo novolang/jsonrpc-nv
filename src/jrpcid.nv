@@ -64,7 +64,7 @@ pub enum JrpcId
 //     println(jrpcid.id_text(jrpcid.id_str("init-1")))  // "init-1"
 // ```
 pub fn id_str(value: Str) -> JrpcId []
-    todo("jsonrpc-nv.jrpcid.id_str")
+    JrpcIdStr(value: value)
 
 // An integer id.
 //
@@ -75,7 +75,7 @@ pub fn id_str(value: Str) -> JrpcId []
 //     println(jrpcid.id_text(jrpcid.id_int(42)))        // 42
 // ```
 pub fn id_int(value: Int) -> JrpcId []
-    todo("jsonrpc-nv.jrpcid.id_int")
+    JrpcIdInt(value: value)
 
 // The null id, for a response whose request could not be read.
 //
@@ -86,7 +86,7 @@ pub fn id_int(value: Int) -> JrpcId []
 //     println("${jrpcid.is_null(jrpcid.id_null())}")    // true
 // ```
 pub fn id_null() -> JrpcId []
-    todo("jsonrpc-nv.jrpcid.id_null")
+    JrpcIdNull
 
 // Whether an id is the null one.
 //
@@ -101,7 +101,9 @@ pub fn id_null() -> JrpcId []
 //     println("${jrpcid.is_null(JrpcIdStr("a"))}")      // false
 // ```
 pub fn is_null(id: JrpcId) -> Bool []
-    todo("jsonrpc-nv.jrpcid.is_null")
+    match id
+        JrpcIdNull => true
+        _          => false
 
 // Whether a response's id answers a request's id.
 //
@@ -123,7 +125,10 @@ pub fn is_null(id: JrpcId) -> Bool []
 //     println("${jrpcid.id_equals(JrpcIdNull, JrpcIdNull)}")            // false
 // ```
 pub fn id_equals(a: JrpcId, b: JrpcId) -> Bool []
-    todo("jsonrpc-nv.jrpcid.id_equals")
+    match (a, b)
+        (JrpcIdStr(x), JrpcIdStr(y)) => x == y
+        (JrpcIdInt(x), JrpcIdInt(y)) => x == y
+        _                            => false
 
 // The id as text, for a log or a table key: `"7"`, `"\"init-1\""`,
 // `"null"`.
@@ -139,7 +144,7 @@ pub fn id_equals(a: JrpcId, b: JrpcId) -> Bool []
 //     println(jrpcid.id_text(JrpcIdStr("a")))           // "a"
 // ```
 pub fn id_text(id: JrpcId) -> Str []
-    todo("jsonrpc-nv.jrpcid.id_text")
+    json.stringify(id_to_json(id))
 
 // The id as its JSON value, ready to be a message's `id` member.
 //
@@ -151,7 +156,10 @@ pub fn id_text(id: JrpcId) -> Str []
 //     println(json.stringify(jrpcid.id_to_json(JrpcIdInt(3))))   // 3
 // ```
 pub fn id_to_json(id: JrpcId) -> JsonValueH []
-    todo("jsonrpc-nv.jrpcid.id_to_json")
+    match id
+        JrpcIdStr(s) => json.string(s)
+        JrpcIdInt(n) => json.int(n)
+        JrpcIdNull   => json.null()
 
 // An id read out of a JSON value.
 //
@@ -173,7 +181,15 @@ pub fn id_to_json(id: JrpcId) -> JsonValueH []
 //                 Err(f) => println(f.message())
 // ```
 pub fn id_from_json(v: JsonValueH) -> Result<JrpcId, jrpcerr.JrpcFault> []
-    todo("jsonrpc-nv.jrpcid.id_from_json")
+    let t = json.type_of(v)
+    if t == "string"
+        return Ok(JrpcIdStr(value: json.to_str(v) ?? ""))
+    if t == "null"
+        return Ok(JrpcIdNull)
+    if t == "number"
+        if let Some(n) = jrpcerr.integral(v)
+            return Ok(JrpcIdInt(value: n))
+    Err(jrpcerr.fault(JrpcBadId, json.stringify(v)))
 
 // The next id in a monotonic sequence, given the last one.
 //
@@ -191,4 +207,6 @@ pub fn id_from_json(v: JsonValueH) -> Result<JrpcId, jrpcerr.JrpcFault> []
 //     println(jrpcid.id_text(jrpcid.next_id(JrpcIdInt(4))))   // 5
 // ```
 pub fn next_id(last: JrpcId) -> JrpcId []
-    todo("jsonrpc-nv.jrpcid.next_id")
+    match last
+        JrpcIdInt(n) => JrpcIdInt(value: n + 1)
+        _            => JrpcIdInt(value: 1)

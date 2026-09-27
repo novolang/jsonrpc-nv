@@ -44,6 +44,7 @@
 
 use std.json
 use jrpcerr
+use jrpcid
 use jrpcmsg
 
 // An envelope decoded from the text of one message.
@@ -62,7 +63,8 @@ use jrpcmsg
 //         Err(f) => println(f.message())
 // ```
 pub fn decode(text: Str) -> Result<jrpcmsg.JrpcEnvelope, jrpcerr.JrpcFault> []
-    todo("jsonrpc-nv.jrpccodec.decode")
+    let Some(v) = json.parse(text) else return Err(jrpcerr.fault(JrpcNotJson, preview(text)))
+    decode_value(v)
 
 // An envelope decoded from a JSON value the caller already parsed.
 //
@@ -83,7 +85,18 @@ pub fn decode(text: Str) -> Result<jrpcmsg.JrpcEnvelope, jrpcerr.JrpcFault> []
 //                 Err(f) => println(f.message())
 // ```
 pub fn decode_value(v: JsonValueH) -> Result<jrpcmsg.JrpcEnvelope, jrpcerr.JrpcFault> []
-    todo("jsonrpc-nv.jrpccodec.decode_value")
+    if json.type_of(v) != "array"
+        return Ok(JrpcSingle(message: decode_message(v)!))
+    let n = json.len(v) ?? 0
+    if n == 0
+        return Err(jrpcerr.fault(JrpcEmptyBatch, "[]"))
+    var messages: [jrpcmsg.JrpcMessage] = []
+    for i in 0..n
+        let item = json.index(v, i) ?? json.null()
+        match decode_message(item)
+            Ok(m)  => list.push(messages, m)
+            Err(f) => return Err(jrpcerr.fault(f.kind, "batch member ${i}: ${f.detail}"))
+    Ok(JrpcBatch(messages: messages))
 
 // One message decoded from one JSON object.
 //
@@ -107,7 +120,15 @@ pub fn decode_value(v: JsonValueH) -> Result<jrpcmsg.JrpcEnvelope, jrpcerr.JrpcF
 //                 Err(f) => println(f.message())
 // ```
 pub fn decode_message(v: JsonValueH) -> Result<jrpcmsg.JrpcMessage, jrpcerr.JrpcFault> []
-    todo("jsonrpc-nv.jrpccodec.decode_message")
+    if json.type_of(v) != "object"
+        return Err(jrpcerr.fault(JrpcNotObject, json.type_of(v)))
+    let version = json.get(v, "jsonrpc")
+    if json.get_str(v, "jsonrpc") != Some("2.0")
+        let seen = if version == None then "no jsonrpc member" else json.stringify(version ?? json.null())
+        return Err(jrpcerr.fault(JrpcBadVersion, seen))
+    if json.get(v, "method") != None
+        return Ok(JrpcRequestMsg(request: decode_request(v)!))
+    Ok(JrpcResponseMsg(response: decode_response(v)!))
 
 // What a read produced: the envelope, or the refusal to send instead.
 //
@@ -170,7 +191,11 @@ pub enum JrpcRead
 //                 println(jrpccodec.encode_response(r))
 // ```
 pub fn decode_or_error(text: Str) -> JrpcRead []
-    todo("jsonrpc-nv.jrpccodec.decode_or_error")
+    match decode(text)
+        Ok(e)  => JrpcReadEnvelope(envelope: e)
+        Err(f) =>
+            let reply = jrpcmsg.failed(id_of(text), jrpcerr.error_for_fault(f))
+            JrpcReadRefusal(response: reply, fault: f)
 
 // The envelope as the text of one message.
 //
@@ -187,7 +212,7 @@ pub fn decode_or_error(text: Str) -> JrpcRead []
 //     println(jrpccodec.encode(e))
 // ```
 pub fn encode(e: jrpcmsg.JrpcEnvelope) -> Str []
-    todo("jsonrpc-nv.jrpccodec.encode")
+    json.stringify(envelope_to_json(e))
 
 // One message as text.
 //
@@ -200,7 +225,7 @@ pub fn encode(e: jrpcmsg.JrpcEnvelope) -> Str []
 //         JrpcRequestMsg(jrpcmsg.notification("exit", None))))
 // ```
 pub fn encode_message(m: jrpcmsg.JrpcMessage) -> Str []
-    todo("jsonrpc-nv.jrpccodec.encode_message")
+    json.stringify(message_to_json(m))
 
 // One request as text.
 //
@@ -212,7 +237,7 @@ pub fn encode_message(m: jrpcmsg.JrpcMessage) -> Str []
 //     println(jrpccodec.encode_request(jrpcmsg.call(JrpcIdInt(1), "initialize", None)))
 // ```
 pub fn encode_request(r: jrpcmsg.JrpcRequest) -> Str []
-    todo("jsonrpc-nv.jrpccodec.encode_request")
+    encode_message(JrpcRequestMsg(request: r))
 
 // One response as text.
 //
@@ -225,7 +250,7 @@ pub fn encode_request(r: jrpcmsg.JrpcRequest) -> Str []
 //     println(jrpccodec.encode_response(jrpcmsg.ok(JrpcIdInt(1), json.null())))
 // ```
 pub fn encode_response(r: jrpcmsg.JrpcResponse) -> Str []
-    todo("jsonrpc-nv.jrpccodec.encode_response")
+    encode_message(JrpcResponseMsg(response: r))
 
 // A message as a JSON value, for a caller that will embed it in
 // something else or compare it structurally.
@@ -247,7 +272,9 @@ pub fn encode_response(r: jrpcmsg.JrpcResponse) -> Str []
 //         JrpcRequestMsg(jrpcmsg.notification("exit", None)))))
 // ```
 pub fn message_to_json(m: jrpcmsg.JrpcMessage) -> JsonValueH []
-    todo("jsonrpc-nv.jrpccodec.message_to_json")
+    match m
+        JrpcRequestMsg(r)  => request_to_json(r)
+        JrpcResponseMsg(r) => response_to_json(r)
 
 // An envelope as a JSON value.
 //
@@ -261,7 +288,13 @@ pub fn message_to_json(m: jrpcmsg.JrpcMessage) -> JsonValueH []
 //     println(json.stringify(jrpccodec.envelope_to_json(e)))
 // ```
 pub fn envelope_to_json(e: jrpcmsg.JrpcEnvelope) -> JsonValueH []
-    todo("jsonrpc-nv.jrpccodec.envelope_to_json")
+    match e
+        JrpcSingle(m)  => message_to_json(m)
+        JrpcBatch(ms)  =>
+            var items: [JsonValueH] = []
+            for m in ms
+                list.push(items, message_to_json(m))
+            json.array(items)
 
 // The response array a server sends for a batch, or `None` when it
 // must send nothing.
@@ -281,4 +314,63 @@ pub fn envelope_to_json(e: jrpcmsg.JrpcEnvelope) -> JsonValueH []
 //         Some(t) => println(t)
 // ```
 pub fn encode_batch_replies(replies: [jrpcmsg.JrpcResponse]) -> ?Str []
-    todo("jsonrpc-nv.jrpccodec.encode_batch_replies")
+    if list.len(replies) == 0
+        return None
+    var items: [JsonValueH] = []
+    for r in replies
+        list.push(items, response_to_json(r))
+    Some(json.stringify(json.array(items)))
+
+// ── the members of one message ───────────────────────────────────────
+
+// The first 64 bytes of a text, for a fault's detail.
+fn preview(text: Str) -> Str
+    if str.len(text) <= 64
+        return text
+    str.slice(text, 0, 64) + "..."
+
+fn decode_request(v: JsonValueH) -> Result<jrpcmsg.JrpcRequest, jrpcerr.JrpcFault>
+    let Some(method) = json.get_str(v, "method") else return Err(jrpcerr.fault(JrpcNoMethod, json.stringify(json.get(v, "method") ?? json.null())))
+    let params = json.get(v, "params")
+    if let Some(p) = params
+        if not jrpcmsg.params_ok(p)
+            return Err(jrpcerr.fault(JrpcBadParams, json.type_of(p)))
+    let Some(raw) = json.get(v, "id") else return Ok(jrpcmsg.notification(method, params))
+    Ok(jrpcmsg.call(jrpcid.id_from_json(raw)!, method, params))
+
+fn decode_response(v: JsonValueH) -> Result<jrpcmsg.JrpcResponse, jrpcerr.JrpcFault>
+    let result = json.get(v, "result")
+    let error = json.get(v, "error")
+    if result != None and error != None
+        return Err(jrpcerr.fault(JrpcBothOutcomes, "result and error"))
+    if result == None and error == None
+        return Err(jrpcerr.fault(JrpcNoOutcome, "no method, result or error"))
+    let Some(raw) = json.get(v, "id") else return Err(jrpcerr.fault(JrpcBadId, "a response with no id"))
+    let id = jrpcid.id_from_json(raw)!
+    let Some(e) = error else return Ok(jrpcmsg.ok(id, result ?? json.null()))
+    Ok(jrpcmsg.failed(id, jrpcerr.error_from_json(e)!))
+
+// The id of a request that did not decode, when the text is an object
+// whose `id` member is one: section 5 answers such a request with its
+// own id, and with the null id only when the id cannot be read.
+fn id_of(text: Str) -> JrpcId
+    let Some(v) = json.parse(text) else return JrpcIdNull
+    let Some(raw) = json.get(v, "id") else return JrpcIdNull
+    match jrpcid.id_from_json(raw)
+        Ok(i)  => i
+        Err(_) => JrpcIdNull
+
+fn request_to_json(r: jrpcmsg.JrpcRequest) -> JsonValueH
+    var members: [(Str, JsonValueH)] = [("jsonrpc", json.string(jrpcmsg.version()))]
+    if let Some(i) = r.id
+        list.push(members, ("id", jrpcid.id_to_json(i)))
+    list.push(members, ("method", json.string(r.method)))
+    if let Some(p) = r.params
+        list.push(members, ("params", p))
+    json.object(members)
+
+fn response_to_json(r: jrpcmsg.JrpcResponse) -> JsonValueH
+    let outcome = match r.outcome
+        JrpcResult(v)  => ("result", v)
+        JrpcFailure(e) => ("error", jrpcerr.error_to_json(e))
+    json.object([("jsonrpc", json.string(jrpcmsg.version())), ("id", jrpcid.id_to_json(r.id)), outcome])
