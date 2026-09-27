@@ -1,0 +1,140 @@
+// jrpcedge_tests.nv — the edges the behaviour suites do not reach:
+// every fault's name and class, the error object's JSON at its edges,
+// the integer rule, and every way a header section is refused.
+
+use std.test
+use std.json
+use std.bytes
+use jrpcerr
+use jrpcid
+use jrpcmsg
+use jrpccodec
+use jrpcframe
+
+fn all_kinds() -> [JrpcFaultKind]
+    [JrpcNotJson, JrpcNotObject, JrpcBadVersion, JrpcNoMethod, JrpcBadParams, JrpcBadId,
+     JrpcBothOutcomes, JrpcNoOutcome, JrpcEmptyBatch, JrpcBadErrorObject,
+     JrpcCodeNotServerRange, JrpcNoContentLength, JrpcBadContentLength, JrpcBadHeaderLine,
+     JrpcBadCharset, JrpcHeaderTooLarge, JrpcContentTooLarge, JrpcTruncated]
+
+@test
+fn test_every_fault_has_a_stable_name_and_a_class()
+    var names: [Str] = []
+    var framing = 0
+    for k in all_kinds()
+        list.push(names, jrpcerr.kind_name(k))
+        if jrpcerr.is_framing_fault(k)
+            framing = framing + 1
+    test.assert_eq(str.join(names, " "),
+        "not_json not_object bad_version no_method bad_params bad_id both_outcomes no_outcome empty_batch bad_error_object code_not_server_range no_content_length bad_content_length bad_header_line bad_charset header_too_large content_too_large truncated")
+    test.assert_eq(framing, 7)
+
+@test
+fn test_a_fault_names_its_offset_when_it_has_one()
+    test.assert_eq(jrpcerr.fault(JrpcNoMethod, "7").message(), "jsonrpc: no_method: 7")
+    test.assert_eq(jrpcerr.fault_at(JrpcBadHeaderLine, "x", 3).message(), "jsonrpc: bad_header_line at byte 3: x")
+    test.assert_eq(jrpcerr.error(5, "five").message(), "five")
+
+@test
+fn test_every_code_name()
+    test.assert_eq(jrpcerr.code_name(0 - 32700), "Parse error")
+    test.assert_eq(jrpcerr.code_name(0 - 32600), "Invalid Request")
+    test.assert_eq(jrpcerr.code_name(0 - 32601), "Method not found")
+    test.assert_eq(jrpcerr.code_name(0 - 32602), "Invalid params")
+    test.assert_eq(jrpcerr.code_name(0 - 32603), "Internal error")
+    test.assert_eq(jrpcerr.code_name(0 - 32050), "Server error")
+    test.assert_eq(jrpcerr.code_name(0 - 32100), "")
+
+fn error_of(text: Str) -> Str
+    match jrpcerr.error_from_json(json.parse(text) ?? json.null())
+        Ok(e)  => "${e.code} ${e.message} ${e.data != None}"
+        Err(f) => f.message()
+
+@test
+fn test_an_error_object_is_read_strictly_and_its_data_kept()
+    test.assert_eq(error_of("{\"code\":1,\"message\":\"m\",\"data\":[1]}"), "1 m true")
+    test.assert_eq(error_of("{\"code\":1,\"message\":\"m\"}"), "1 m false")
+    test.assert_eq(error_of("[1]"), "jsonrpc: bad_error_object: array")
+    test.assert_eq(error_of("{\"message\":\"m\"}"), "jsonrpc: bad_error_object: no code")
+    test.assert_eq(error_of("{\"code\":1.5,\"message\":\"m\"}"), "jsonrpc: bad_error_object: code 1.5")
+    test.assert_eq(error_of("{\"code\":1}"), "jsonrpc: bad_error_object: no message")
+    let with = jrpcerr.with_data(jrpcerr.error(1, "m"), json.int(2))
+    test.assert_eq(json.stringify(jrpcerr.error_to_json(with)), "{\"code\":1,\"message\":\"m\",\"data\":2}")
+
+fn integral_of(text: Str) -> Int
+    jrpcerr.integral(json.parse(text) ?? json.null()) ?? 7777
+
+@test
+fn test_only_a_number_written_as_an_integer_is_integral()
+    test.assert_eq(integral_of("-12"), 0 - 12)
+    test.assert_eq(integral_of("9223372036854775807"), 9223372036854775807)
+    for t in ["1.0", "1e3", "1E3", "9223372036854775808", "1E400", "\"1\"", "null"]
+        test.assert_eq(integral_of(t), 7777)
+
+@test
+fn test_the_null_id_reads_and_nothing_else_is_null()
+    match jrpcid.id_from_json(json.null())
+        Ok(i)  => test.assert(jrpcid.is_null(i))
+        Err(f) => test.fail(f.message())
+    test.assert(not jrpcid.is_null(jrpcid.id_str("")))
+    test.assert(not jrpcid.is_null(jrpcid.id_int(0)))
+    test.assert_eq(jrpcid.id_text(jrpcid.id_null()), "null")
+
+@test
+fn test_a_response_in_a_batch_needs_no_reply()
+    let r = JrpcResponseMsg(response: jrpcmsg.ok(jrpcid.id_int(1), json.null()))
+    let q = JrpcRequestMsg(request: jrpcmsg.call(jrpcid.id_int(2), "m", None))
+    match jrpcmsg.batch([r, q])
+        Ok(b)  => test.assert_eq(jrpcmsg.replies_needed(b), 1)
+        Err(f) => test.fail(f.message())
+
+fn refused_id(text: Str) -> Str
+    match jrpccodec.decode_or_error(text)
+        JrpcReadRefusal(r, _) => jrpcid.id_text(r.id)
+        JrpcReadMixed(_, rs)  => jrpcid.id_text(rs[0].id)
+        JrpcReadEnvelope(_)   => "decoded"
+
+@test
+fn test_a_refusal_answers_the_request_s_id_when_it_can()
+    test.assert_eq(refused_id("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":1}"), "7")
+    test.assert_eq(refused_id("{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":1}"), "null")
+    test.assert_eq(refused_id("[{\"jsonrpc\":\"2.0\",\"id\":1.5}]"), "null")
+    test.assert_eq(refused_id("[{\"jsonrpc\":\"2.0\",\"id\":\"a\",\"method\":[]}]"), "\"a\"")
+    test.assert_eq(refused_id("7"), "null")
+
+// ── the header section ──────────────────────────────────────────────
+
+fn u8s(text: Str) -> [u8]
+    bytes.to_byte_list(bytes.from_str(text))
+
+// What a reader fed `text` in one piece answers: the message, or the
+// fault's name, offset and detail.
+fn frame_fault(limits: JrpcLimits, text: Str) -> Str
+    match jrpcframe.feed(jrpcframe.reader(limits), u8s(text))
+        Ok(step) =>
+            if let Some(m) = step.message
+                return "message " + m
+            "waiting"
+        Err(f)   => "${jrpcerr.kind_name(f.kind)} ${f.offset} ${f.detail}"
+
+@test
+fn test_every_way_a_header_section_is_refused()
+    let d = jrpcframe.default_limits()
+    let small = jrpcframe.small_limits()
+    test.assert_eq(frame_fault(d, "Content-Length 2\r\n\r\n{}"), "bad_header_line 0 Content-Length 2")
+    test.assert_eq(frame_fault(d, "X-A: 1\r\nBad Name: 1\r\n\r\n{}"), "bad_header_line 8 Bad Name: 1")
+    test.assert_eq(frame_fault(d, "Content-Length: 2\r\nContent-Type: text/plain; charset=latin1\r\n\r\n{}"),
+        "bad_charset 19 text/plain; charset=latin1")
+    test.assert_eq(frame_fault(d, "Content-Length: 1234567890123456789\r\n\r\n"),
+        "bad_content_length 0 1234567890123456789")
+    test.assert_eq(frame_fault(d, "Content-Length: -1\r\n\r\n"), "bad_content_length 0 -1")
+    let long_header = "X-Pad: " + str.repeat("a", 600) + "\r\nContent-Length: 2\r\n\r\n{}"
+    test.assert_eq(frame_fault(small, long_header), "header_too_large -1 626 bytes of header")
+    test.assert_eq(frame_fault(small, str.repeat("a", 600)), "header_too_large -1 600 bytes and no blank line")
+
+@test
+fn test_a_charset_named_utf8_in_any_spelling_is_accepted()
+    let d = jrpcframe.default_limits()
+    for ct in ["application/vscode-jsonrpc; charset=utf-8", "application/json; charset=\"UTF-8\"",
+               "application/json; charset=utf8", "application/json"]
+        test.assert_eq(frame_fault(d, "Content-Length: 2\r\nContent-Type: " + ct + "\r\n\r\n{}"), "message {}")

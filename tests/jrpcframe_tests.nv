@@ -1,17 +1,11 @@
-// jrpcframe_tests.nv — the API suite for the codec and for the
-// Content-Length framing.
+// jrpcframe_tests.nv — the codec, and the Content-Length framing.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: jsonrpc-nv.<module>.<fn>`.
-//
-// THE FRAME BYTES ARE THE BASE PROTOCOL's OWN.  The Language Server
-// Protocol's base protocol and the Debug Adapter Protocol both frame a
-// message as `Content-Length: <n>\r\n\r\n<n bytes of UTF-8>`, and the
-// length is in BYTES.  The two tests that matter here are the one that
-// feeds a frame in three pieces and the one that puts a non-ASCII
-// character in the content, because those are the two ways a framing
-// implementation is wrong in production and right on a developer's
-// machine.
+// The frame bytes are the base protocol's own: the Language Server
+// Protocol and the Debug Adapter Protocol both frame a message as
+// `Content-Length: <n>\r\n\r\n<n bytes of UTF-8>`, with the length in
+// bytes.  The tests that feed a frame in pieces and that put a
+// character outside ASCII in the content are the two cases a framer
+// meets on a real pipe.
 
 use std.test
 use std.list
@@ -303,6 +297,7 @@ fn test_decode_or_error_hands_back_the_response_to_send() [io]
     test.case("bad text becomes a response with the null id")
     match jrpccodec.decode_or_error("not json")
         JrpcReadEnvelope(_)   => test.fail("that is not json")
+        JrpcReadMixed(_, _)   => test.fail("that is not a batch")
         JrpcReadRefusal(r, f) =>
             test.assert(jrpcid.is_null(r.id))
             test.assert(jrpcerr.kind_name(f.kind)
@@ -314,6 +309,7 @@ fn test_decode_or_error_hands_back_the_response_to_send() [io]
     test.case("good text decodes and nothing is to be sent")
     match jrpccodec.decode_or_error("{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}")
         JrpcReadRefusal(_, _) => test.fail("that is a legal notification")
+        JrpcReadMixed(_, _)   => test.fail("that is not a batch")
         JrpcReadEnvelope(e)   => test.assert(jrpcmsg.replies_needed(e) == 0)
 
 @test

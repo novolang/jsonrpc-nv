@@ -1,0 +1,253 @@
+// spec_tests.nv — the JSON-RPC 2.0 specification's examples (section
+// 7), verbatim, answered by a small server written against this
+// package; and the traffic of this project's own MCP server as a
+// consumer check.
+//
+// The server below implements the example methods the specification
+// uses: `subtract` by position and by name, `sum`, `get_data`, and
+// `update`, `notify_hello` and `notify_sum` as notifications.  Each
+// example's request goes through `jrpccodec.decode_or_error`, and the
+// reply is compared with the specification's as JSON values.  A batch
+// reply is compared without regard to order, which section 6 permits.
+
+use std.test
+use std.json
+use jrpcerr
+use jrpcid
+use jrpcmsg
+use jrpccodec
+use jrpcframe
+
+// ── a server for the examples ───────────────────────────────────────
+
+fn num(v: ?JsonValueH) -> Int
+    json.to_int(v ?? json.null()) ?? 0
+
+// The answer to one call.
+fn answer(r: JrpcRequest, id: JrpcId) -> JrpcResponse
+    let p = r.params ?? json.null()
+    if r.method == "subtract"
+        if json.type_of(p) == "array"
+            return jrpcmsg.ok(id, json.int(num(json.index(p, 0)) - num(json.index(p, 1))))
+        return jrpcmsg.ok(id, json.int(num(json.get(p, "minuend")) - num(json.get(p, "subtrahend"))))
+    if r.method == "sum"
+        var total = 0
+        for i in 0..(json.len(p) ?? 0)
+            total = total + num(json.index(p, i))
+        return jrpcmsg.ok(id, json.int(total))
+    if r.method == "get_data"
+        return jrpcmsg.ok(id, json.array([json.string("hello"), json.int(5)]))
+    jrpcmsg.failed(id, jrpcerr.error(0 - 32601, jrpcerr.code_name(0 - 32601)))
+
+// The responses a list of messages needs: one per call.
+fn answers(ms: [JrpcMessage]) -> [JrpcResponse]
+    var out: [JrpcResponse] = []
+    for m in ms
+        match m
+            JrpcRequestMsg(r)  =>
+                if let Some(id) = r.id
+                    list.push(out, answer(r, id))
+            JrpcResponseMsg(_) => ()
+    out
+
+// What the server sends for a request's text, or `None` for nothing.
+fn serve(text: Str) -> ?Str
+    match jrpccodec.decode_or_error(text)
+        JrpcReadRefusal(r, _) => Some(jrpccodec.encode_response(r))
+        JrpcReadMixed(ms, rs) => jrpccodec.encode_batch_replies(list.concat(answers(ms), rs))
+        JrpcReadEnvelope(e)   =>
+            let replies = answers(jrpcmsg.messages_of(e))
+            if jrpcmsg.is_batch(e)
+                return jrpccodec.encode_batch_replies(replies)
+            if list.len(replies) == 0
+                return None
+            Some(jrpccodec.encode_response(replies[0]))
+
+// A value as text with every object's members sorted by name, so two
+// values that differ only in member order give the same text.
+fn sorted_text(v: JsonValueH) -> Str
+    let t = json.type_of(v)
+    if t == "object"
+        var keys = json.keys(v)
+        list.sort(keys)
+        var parts: [Str] = []
+        for k in keys
+            let member = sorted_text(json.get(v, k) ?? json.null())
+            list.push(parts, json.stringify(json.string(k)) + ":" + member)
+        return "{" + str.join(parts, ",") + "}"
+    if t == "array"
+        var parts: [Str] = []
+        for i in 0..(json.len(v) ?? 0)
+            list.push(parts, sorted_text(json.index(v, i) ?? json.null()))
+        return "[" + str.join(parts, ",") + "]"
+    json.stringify(v)
+
+// A reply as text to compare: members sorted, and the members of a
+// batch reply sorted too, since section 6 lets them come in any order.
+fn canonical(text: Str) -> Str
+    let Some(v) = json.parse(text) else return "not json: ${text}"
+    if json.type_of(v) != "array"
+        return sorted_text(v)
+    var items: [Str] = []
+    for i in 0..(json.len(v) ?? 0)
+        list.push(items, sorted_text(json.index(v, i) ?? json.null()))
+    list.sort(items)
+    "[" + str.join(items, ",") + "]"
+
+// The reply to `request`, compared with the specification's.
+fn exchange(request: Str, reply: Str) -> Bool
+    match serve(request)
+        Some(got) => canonical(got) == canonical(reply)
+        None      => reply == ""
+
+// ── section 7, example by example ───────────────────────────────────
+
+@test
+fn test_a_call_with_positional_parameters()
+    test.assert(exchange("{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [42, 23], \"id\": 1}",
+        "{\"jsonrpc\": \"2.0\", \"result\": 19, \"id\": 1}"))
+    test.assert(exchange("{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [23, 42], \"id\": 2}",
+        "{\"jsonrpc\": \"2.0\", \"result\": -19, \"id\": 2}"))
+
+@test
+fn test_a_call_with_named_parameters()
+    test.assert(exchange("{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": {\"subtrahend\": 23, \"minuend\": 42}, \"id\": 3}",
+        "{\"jsonrpc\": \"2.0\", \"result\": 19, \"id\": 3}"))
+    test.assert(exchange("{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": {\"minuend\": 42, \"subtrahend\": 23}, \"id\": 4}",
+        "{\"jsonrpc\": \"2.0\", \"result\": 19, \"id\": 4}"))
+
+@test
+fn test_a_notification_is_not_answered()
+    test.assert(exchange("{\"jsonrpc\": \"2.0\", \"method\": \"update\", \"params\": [1,2,3,4,5]}", ""))
+    test.assert(exchange("{\"jsonrpc\": \"2.0\", \"method\": \"foobar\"}", ""))
+
+@test
+fn test_a_call_of_a_method_that_does_not_exist()
+    test.assert(exchange("{\"jsonrpc\": \"2.0\", \"method\": \"foobar\", \"id\": \"1\"}",
+        "{\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32601, \"message\": \"Method not found\"}, \"id\": \"1\"}"))
+
+@test
+fn test_invalid_json_is_a_parse_error_with_a_null_id()
+    test.assert(exchange("{\"jsonrpc\": \"2.0\", \"method\": \"foobar, \"params\": \"bar\", \"baz]",
+        "{\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32700, \"message\": \"Parse error\"}, \"id\": null}"))
+
+@test
+fn test_an_invalid_request_object()
+    test.assert(exchange("{\"jsonrpc\": \"2.0\", \"method\": 1, \"params\": \"bar\"}",
+        "{\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32600, \"message\": \"Invalid Request\"}, \"id\": null}"))
+
+@test
+fn test_a_batch_that_is_not_json()
+    let request = "[\n  {\"jsonrpc\": \"2.0\", \"method\": \"sum\", \"params\": [1,2,4], \"id\": \"1\"},\n  {\"jsonrpc\": \"2.0\", \"method\"\n]"
+    test.assert(exchange(request,
+        "{\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32700, \"message\": \"Parse error\"}, \"id\": null}"))
+
+@test
+fn test_an_empty_array_is_one_invalid_request()
+    test.assert(exchange("[]",
+        "{\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32600, \"message\": \"Invalid Request\"}, \"id\": null}"))
+
+@test
+fn test_each_invalid_member_of_a_batch_is_answered()
+    let one = "{\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32600, \"message\": \"Invalid Request\"}, \"id\": null}"
+    test.assert(exchange("[1]", "[" + one + "]"))
+    test.assert(exchange("[1,2,3]", "[" + one + "," + one + "," + one + "]"))
+
+@test
+fn test_a_batch_of_calls_notifications_and_mistakes()
+    let request = str.join(["[",
+        "{\"jsonrpc\": \"2.0\", \"method\": \"sum\", \"params\": [1,2,4], \"id\": \"1\"},",
+        "{\"jsonrpc\": \"2.0\", \"method\": \"notify_hello\", \"params\": [7]},",
+        "{\"jsonrpc\": \"2.0\", \"method\": \"subtract\", \"params\": [42,23], \"id\": \"2\"},",
+        "{\"foo\": \"boo\"},",
+        "{\"jsonrpc\": \"2.0\", \"method\": \"foo.get\", \"params\": {\"name\": \"myself\"}, \"id\": \"5\"},",
+        "{\"jsonrpc\": \"2.0\", \"method\": \"get_data\", \"id\": \"9\"}",
+        "]"],
+        "\n")
+    let reply = str.join(["[",
+        "{\"jsonrpc\": \"2.0\", \"result\": 7, \"id\": \"1\"},",
+        "{\"jsonrpc\": \"2.0\", \"result\": 19, \"id\": \"2\"},",
+        "{\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32600, \"message\": \"Invalid Request\"}, \"id\": null},",
+        "{\"jsonrpc\": \"2.0\", \"error\": {\"code\": -32601, \"message\": \"Method not found\"}, \"id\": \"5\"},",
+        "{\"jsonrpc\": \"2.0\", \"result\": [\"hello\", 5], \"id\": \"9\"}",
+        "]"],
+        "\n")
+    test.assert(exchange(request, reply))
+
+@test
+fn test_a_batch_of_notifications_is_answered_with_nothing()
+    let request = str.join(["[",
+        "{\"jsonrpc\": \"2.0\", \"method\": \"notify_sum\", \"params\": [1,2,4]},",
+        "{\"jsonrpc\": \"2.0\", \"method\": \"notify_hello\", \"params\": [7]}",
+        "]"],
+        "\n")
+    test.assert(exchange(request, ""))
+
+// ── the MCP server's own traffic ────────────────────────────────────
+
+// Requests this project's MCP test scripts send, and responses its
+// server answered them with (compiler/mcp, 0.13.0).  Each one frames,
+// reads back through the Content-Length reader fed a byte at a time,
+// decodes, and encodes to the same JSON value.
+fn mcp_requests() -> [Str]
+    ["{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{}}}",
+     "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}",
+     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}",
+     "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"novo.health.check\",\"arguments\":{\"category\":\"core\"}}}",
+     "{\"jsonrpc\":\"2.0\",\"method\":\"exit\"}"]
+
+fn mcp_responses() -> [Str]
+    ["{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\",\"serverInfo\":{\"name\":\"novo-mcp\",\"version\":\"0.13.0-25-gf736c655f\"},\"capabilities\":{\"tools\":{}},\"resultType\":\"complete\",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"novo-mcp\",\"version\":\"0.13.0-25-gf736c655f\"}}}}",
+     "{\"jsonrpc\":\"2.0\",\"id\":\"s3\",\"error\":{\"code\":-32601,\"message\":\"unknown method: no/such\"}}",
+     "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"novo binary: /home/klajen/projects/novo/bin/novo\\nversion line: Novo compiler\"}],\"isError\":false,\"resultType\":\"complete\",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"novo-mcp\",\"version\":\"0.13.0-25-gf736c655f\"}}}}"]
+
+// The message a frame of `text`, fed one byte at a time, reads back as.
+fn through_the_framing(text: Str) -> Str
+    var r = jrpcframe.reader(jrpcframe.small_limits())
+    var got = "no message"
+    for b in jrpcframe.frame(text)
+        match jrpcframe.feed(r, [b])
+            Ok(step) =>
+                r = step.reader
+                if let Some(m) = step.message
+                    got = m
+            Err(f)   =>
+                got = f.message()
+    got
+
+@test
+fn test_the_mcp_server_s_messages_read_and_write_back_unchanged()
+    var all = mcp_requests()
+    list.append(all, mcp_responses())
+    for text in all
+        let read = through_the_framing(text)
+        test.assert_eq(read, text)
+        match jrpccodec.decode(read)
+            Ok(e)  =>
+                let back = json.parse(jrpccodec.encode(e)) ?? json.null()
+                test.assert(json.equals(back, json.parse(text) ?? json.null()))
+            Err(f) => test.fail(f.message())
+
+@test
+fn test_the_mcp_server_s_answers_match_its_calls()
+    let calls = [jrpcmsg.call(jrpcid.id_int(1), "initialize", None),
+        jrpcmsg.call(jrpcid.id_str("s3"), "no/such", None)]
+    let texts = mcp_responses()
+    for i in 0..2
+        match jrpccodec.decode(texts[i])
+            Ok(e)  =>
+                match jrpcmsg.messages_of(e)[0]
+                    JrpcResponseMsg(r) => test.assert(jrpcmsg.answers(calls[i], r))
+                    JrpcRequestMsg(_)  => test.fail("a response")
+            Err(f) => test.fail(f.message())
+    match jrpccodec.decode(texts[1])
+        Ok(e)  =>
+            match jrpcmsg.messages_of(e)[0]
+                JrpcResponseMsg(r) =>
+                    match r.outcome
+                        JrpcFailure(err) =>
+                            test.assert_eq(err.code, 0 - 32601)
+                            test.assert_eq(jrpcerr.code_name(err.code), "Method not found")
+                        JrpcResult(_)    => test.fail("an error")
+                JrpcRequestMsg(_)  => test.fail("a response")
+        Err(f) => test.fail(f.message())

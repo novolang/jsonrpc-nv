@@ -1,16 +1,10 @@
-// jrpcmsg_tests.nv — the API suite for the identifiers, the messages
-// and the batch rules.
+// jrpcmsg_tests.nv — the identifiers, the messages and the batch rules.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: jsonrpc-nv.<module>.<fn>`.
-//
-// THE ASSERTIONS ARE THE SPECIFICATION'S OWN, section by section.
-// JSON-RPC 2.0 is four pages long and most of the mistakes
-// implementations make are in two paragraphs of it: section 4.1's
-// definition of a notification as a request object with no id member,
-// and section 6's rule that a server with no responses to send sends
-// nothing rather than an empty array.  Both are below, as tests, with
-// the section quoted beside them.
+// The assertions are the specification's own, section by section,
+// with each section quoted beside its test.  Two paragraphs carry most
+// of the rules: section 4.1's definition of a notification as a
+// request object with no id member, and section 6's rule that a server
+// with no responses to send sends nothing rather than an empty array.
 
 use std.test
 use std.list

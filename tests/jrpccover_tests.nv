@@ -1,15 +1,5 @@
-// jrpccover_tests.nv — the public functions the two behaviour suites do
-// not reach, each named once so the surface is covered.
-//
-// RED ON PURPOSE, like the rest: every call here reaches
-// `not implemented: jsonrpc-nv.<module>.<fn>`.
-//
-// These are the accessors and the conversions — the functions whose
-// behaviour is "hand me the same thing in another shape".  They have no
-// rule of their own to assert, so asserting one would be inventing a
-// specification rather than testing against one; what this file does is
-// make sure the implementation lane cannot land a body that does not
-// even typecheck at a call site.
+// jrpccover_tests.nv — the accessors and conversions the two behaviour
+// suites do not reach, each called at its declared types.
 
 use std.test
 use std.json
