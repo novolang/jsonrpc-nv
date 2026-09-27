@@ -2,49 +2,25 @@
 // JSON-RPC message, as a reader that is fed bytes and drained of
 // messages.
 //
-// Every body here is a `todo()`; the signatures are the design.
-//
-// WHAT THE FRAMING IS
-//
 // JSON-RPC 2.0 says nothing about where one message ends and the next
 // begins.  The Language Server Protocol's base protocol and the Debug
-// Adapter Protocol both answer that the same way, with something that
-// looks like an HTTP message: a header section of `Name: value` lines
-// ending in carriage return and line feed, a blank line, and then
-// exactly as many bytes of content as the `Content-Length` header
-// said.  `Content-Length` is the one mandatory header.  The only other
-// one either protocol defines is `Content-Type`, whose charset must be
-// `utf-8`.
+// Adapter Protocol both frame a message the same way: a header section
+// of `Name: value` lines each ending in a carriage return and a line
+// feed, a blank line, and then as many bytes of content as the
+// `Content-Length` header says.  `Content-Length` is the one mandatory
+// header.  The only other one either protocol defines is
+// `Content-Type`, whose charset must be `utf-8`.  The length counts
+// bytes of the UTF-8 encoded content, not characters.
 //
-// The length is in BYTES of the UTF-8 encoded content, not characters.
-// A message containing one emoji is four bytes longer than its
-// character count, and a server that wrote the character count there
-// truncates every non-ASCII message it sends.  `content_length` is the
-// function that gets it right; `frame` is the function that means a
-// caller never has to.
+// This package reads no socket.  The host reads bytes and hands them
+// over: `feed` takes bytes and answers at most one message, and `take`
+// answers the next message already buffered.  `finish` is how the host
+// says the peer closed; a close with part of a frame buffered is
+// `JrpcTruncated`.
 //
-// A FEED-AND-DRAIN READER, BECAUSE THIS IS `core`
-//
-// This package reads no socket.  The host reads bytes however it likes
-// — a socket, a pipe, a pair of file descriptors, a test fixture — and
-// hands them here.  `feed` takes bytes and produces at most one
-// message; `take` produces the next one already buffered, adding
-// nothing.  A read of 8 KiB that contained three complete messages
-// gives one from `feed` and two more from `take`, and a caller loops
-// until `take` answers `None` before it goes back to its transport.
-//
-// `finish` is not a formality.  A peer that closes mid-frame has
-// truncated a message, and only the caller knows the close happened —
-// so `finish` is how the reader is told, and `JrpcTruncated` is what
-// it answers when there were bytes left over.
-//
-// THE LIMITS ARE THE CALLER'S
-//
-// Both limits exist because the unbounded version is a denial of
-// service costing the attacker one connection: a header section with
-// no blank line, or a `Content-Length` of nine quintillion.  The
-// content limit is checked when the header is READ, before any content
-// buffer is grown, which is the whole point of checking it.
+// The limits bound what a peer can make the reader hold.  The content
+// limit is checked when the header is read, before any content
+// arrives.
 
 use std.bytes
 use jrpcerr
@@ -142,7 +118,7 @@ pub fn reader(limits: JrpcLimits) -> JrpcReader []
 
 // Adds bytes, and takes one message if the addition completed one.
 //
-// Takes ONE.  A read that completed three leaves two inside, and
+// Takes one.  A read that completed three leaves two inside, and
 // `take` is what gets them; a caller that fed and did not drain has
 // written a server that answers one message per network packet.
 //
@@ -191,7 +167,8 @@ pub fn take(r: JrpcReader) -> Result<JrpcStep, jrpcerr.JrpcFault> []
         return Ok(JrpcStep { reader: r, message: None })
     let body = text_of(list.slice(r.pending, 0, r.expected))
     let rest = list.slice(r.pending, r.expected, list.len(r.pending))
-    Ok(JrpcStep { reader: JrpcReader { limits: r.limits, pending: rest, expected: 0 - 1 }, message: Some(body) })
+    Ok(JrpcStep { reader: JrpcReader { limits: r.limits, pending: rest, expected: 0 - 1 },
+        message: Some(body) })
 
 // Tells the reader the peer closed, and takes the last message.
 //
@@ -288,7 +265,7 @@ pub fn frame_with_content_type(body: Str) -> [u8] []
     bytes_of(head + body)
 
 // The number a `Content-Length` header must carry for this content:
-// its length in UTF-8 BYTES.
+// its length in UTF-8 bytes.
 //
 // Not its character count.  The two differ for every message
 // containing a character outside ASCII, and a diagnostic quoting a
@@ -356,7 +333,7 @@ fn content_length_of(head: [u8]) -> Result<Int, jrpcerr.JrpcFault>
     var length = 0 - 1
     var offset = 0
     for line in str.split(text_of(head), "\r\n")
-        let colon = str.index(line, ":") ?? (0 - 1)
+        let colon = str.index(line, ":") ?? 0 - 1
         if colon <= 0
             return Err(jrpcerr.fault_at(JrpcBadHeaderLine, line, offset))
         let name = str.lower(str.slice(line, 0, colon))

@@ -1,46 +1,18 @@
 // jrpccodec.nv — text on the wire to typed values, and back.
 //
-// Every body here is a `todo()`; the signatures are the design.
-//
-// THE DECODER IS TOTAL AND THE ENCODER IS NOT FALLIBLE
-//
 // `decode` answers a `Result`, because the text comes from a peer.
-// `encode` answers a `Str` and no `Result`, because every value of
-// `JrpcEnvelope` is a message the specification permits — the
-// constructors in `jrpcmsg` refused the ones that are not — so there
-// is nothing left for an encoder to fail on.  A package whose encoder
-// returns a `Result` is telling its caller that some of the values it
-// handed out cannot be sent, which is a design that has already gone
-// wrong once.
+// `encode` answers text and cannot fail: the constructors in `jrpcmsg`
+// refused every shape the specification forbids.
 //
-// WHAT `decode_or_error` IS FOR
+// `decode_or_error` is what a server's read loop is written against.
+// Section 5 requires a server that could not read a request to answer
+// an error response, with the request's id when it could be read and
+// the null id when it could not.  `decode_or_error` makes that
+// response.  It answers a `JrpcRead` rather than a `Result`, because
+// its refusal is a message to send rather than an error to propagate.
 //
-// Section 5 requires a server that could not read a message to answer
-// an error response with a null id.  Writing that means catching the
-// fault, mapping it to a code, choosing the id, and building the
-// response — four steps in which the third is the one everybody gets
-// wrong, because the id is not available precisely in the case where
-// it is needed.  `decode_or_error` is those four steps done once: it
-// answers either the envelope or the response to send, and a server's
-// read loop is then two arms with no protocol decisions in either.
-//
-// IT ANSWERS A `JrpcRead` AND NOT A `Result`
-//
-// Both of its arms are values the caller USES; neither is a failure to
-// propagate.  A refusal is a response the server SENDS — the one
-// message section 5 obliges it to send — so putting it in an `Err`
-// would say the opposite of what the function means, and `?` on it
-// would throw away the very thing it was called for.  `decode` is the
-// fallible one, and its `Err` is a `JrpcFault`, which is this
-// package's error type.
-//
-// IT DOES NOT PARSE JSON ITSELF
-//
-// The value type is `std.json`'s, and so is the parser.  This module
-// reads members out of a parsed value and checks them against sections
-// 4 and 5; it has no scanner, no escape handling and no number
-// grammar, because the standard library has all three and a second
-// copy would be a second set of bugs.
+// This module reads members out of a value `std.json` parsed.  It has
+// no scanner of its own.
 
 use std.json
 use jrpcerr
@@ -49,7 +21,7 @@ use jrpcmsg
 
 // An envelope decoded from the text of one message.
 //
-// The text is the CONTENT of one frame, not a stream: framing is
+// The text is the content of one frame, not a stream: framing is
 // `jrpcframe`'s, and a caller feeding this function two concatenated
 // messages gets `JrpcNotJson`, which is correct and is not the error
 // it was hoping for.
@@ -95,7 +67,8 @@ pub fn decode_value(v: JsonValueH) -> Result<jrpcmsg.JrpcEnvelope, jrpcerr.JrpcF
         let item = json.index(v, i) ?? json.null()
         match decode_message(item)
             Ok(m)  => list.push(messages, m)
-            Err(f) => return Err(jrpcerr.fault(f.kind, "batch member ${i}: ${f.detail}"))
+            Err(f) =>
+                return Err(jrpcerr.fault(f.kind, "batch member ${i}: ${f.detail}"))
     Ok(JrpcBatch(messages: messages))
 
 // One message decoded from one JSON object.
@@ -104,7 +77,7 @@ pub fn decode_value(v: JsonValueH) -> Result<jrpcmsg.JrpcEnvelope, jrpcerr.JrpcF
 // and section 5 say rather than what an implementation might prefer: a
 // `method` member makes it a request, and a `result` or an `error`
 // member makes it a response.  An object with neither is `JrpcNoOutcome`
-// and an object with `method` AND `result` is a request, because
+// and an object with `method` and `result` is a request, because
 // section 4 lists no member the server may not also have invented.
 //
 // ```novo
@@ -124,7 +97,10 @@ pub fn decode_message(v: JsonValueH) -> Result<jrpcmsg.JrpcMessage, jrpcerr.Jrpc
         return Err(jrpcerr.fault(JrpcNotObject, json.type_of(v)))
     let version = json.get(v, "jsonrpc")
     if json.get_str(v, "jsonrpc") != Some("2.0")
-        let seen = if version == None then "no jsonrpc member" else json.stringify(version ?? json.null())
+        let seen = if version == None
+            "no jsonrpc member"
+        else
+            json.stringify(version ?? json.null())
         return Err(jrpcerr.fault(JrpcBadVersion, seen))
     if json.get(v, "method") != None
         return Ok(JrpcRequestMsg(request: decode_request(v)!))
@@ -133,7 +109,7 @@ pub fn decode_message(v: JsonValueH) -> Result<jrpcmsg.JrpcMessage, jrpcerr.Jrpc
 // What a read produced: the envelope, or the refusal to send instead.
 //
 // `decode_or_error`'s answer, and the reason that function is not a
-// `Result`.  The second arm is not a failure — it is a MESSAGE, the
+// `Result`.  The second arm is not a failure — it is a message, the
 // error response section 5 obliges the server to send, already built —
 // and an `Err` holding a value the caller transmits reads as the
 // opposite of what happened.
@@ -152,30 +128,37 @@ pub fn decode_message(v: JsonValueH) -> Result<jrpcmsg.JrpcMessage, jrpcerr.Jrpc
 //     match jrpccodec.decode_or_error("not json at all")
 //         JrpcReadEnvelope(e)   => println(jrpccodec.encode(e))
 //         JrpcReadRefusal(r, _) => println(jrpccodec.encode_response(r))
+//         JrpcReadMixed(ms, rs) => println("${ms.len()} to answer, ${rs.len()} refused")
 // ```
 pub enum JrpcRead
     // The text decoded, and there is nothing to send.
     JrpcReadEnvelope(envelope: jrpcmsg.JrpcEnvelope)
     // The text did not decode.  `response` is what section 5 requires
-    // the server to send — `jrpcerr.error_for_fault` mapped, id
-    // `JrpcIdNull` — and `fault` is why, for the log and for
+    // the server to send: the error `jrpcerr.error_for_fault` maps the
+    // fault to, under the request's id when it could be read and the
+    // null id when it could not.  `fault` is why, for the log and for
     // `jrpcerr.is_framing_fault`.
     JrpcReadRefusal(response: jrpcmsg.JrpcResponse, fault: jrpcerr.JrpcFault)
+    // A batch some of whose members did not decode.  `messages` are the
+    // members that did, to be dispatched as usual, and `refusals` are
+    // the error responses for the others, which go into the batch's
+    // response array beside the answers (section 6).
+    JrpcReadMixed(messages: [jrpcmsg.JrpcMessage], refusals: [jrpcmsg.JrpcResponse])
 
-// The envelope, or the response a server must send because it could
-// not be read.
+// The envelope, or the responses a server must send for what it could
+// not read.
 //
-// THE FUNCTION A SERVER'S READ LOOP IS WRITTEN AGAINST.  Section 5
-// requires an error response with a null id when the request's id
-// cannot be determined, and this is that requirement applied: the
-// fault is mapped by `jrpcerr.error_for_fault`, the id is
-// `JrpcIdNull`, and the caller has a value it can encode and send with
-// no further protocol reasoning.
+// This is the function a server's read loop is written against.  The
+// fault is mapped by `jrpcerr.error_for_fault`, and the response
+// carries the request's id when it could be read and the null id when
+// it could not (section 5).  A batch whose members are all well formed
+// is an envelope; a batch with members that are not answers
+// `JrpcReadMixed`, the good members to dispatch and a refusal for each
+// of the others (section 6).
 //
 // A framing fault is answered here too, so the caller can log a
-// response it will not send — `jrpcerr.is_framing_fault` on the
-// refusal's fault is the check that says to close the connection
-// instead.
+// response it will not send.  `jrpcerr.is_framing_fault` on the
+// refusal's fault says to close the connection instead.
 //
 // ```novo
 // use jrpcerr
@@ -189,11 +172,15 @@ pub enum JrpcRead
 //                 println("out of step; close")
 //             else
 //                 println(jrpccodec.encode_response(r))
+//         JrpcReadMixed(ms, rs) => println("${ms.len()} to answer, ${rs.len()} refused")
 // ```
 pub fn decode_or_error(text: Str) -> JrpcRead []
     match decode(text)
         Ok(e)  => JrpcReadEnvelope(envelope: e)
         Err(f) =>
+            if let Some(v) = json.parse(text)
+                if json.type_of(v) == "array" and (json.len(v) ?? 0) > 0
+                    return members_of(v)
             let reply = jrpcmsg.failed(id_of(text), jrpcerr.error_for_fault(f))
             JrpcReadRefusal(response: reply, fault: f)
 
@@ -289,8 +276,8 @@ pub fn message_to_json(m: jrpcmsg.JrpcMessage) -> JsonValueH []
 // ```
 pub fn envelope_to_json(e: jrpcmsg.JrpcEnvelope) -> JsonValueH []
     match e
-        JrpcSingle(m)  => message_to_json(m)
-        JrpcBatch(ms)  =>
+        JrpcSingle(m) => message_to_json(m)
+        JrpcBatch(ms) =>
             var items: [JsonValueH] = []
             for m in ms
                 list.push(items, message_to_json(m))
@@ -300,7 +287,7 @@ pub fn envelope_to_json(e: jrpcmsg.JrpcEnvelope) -> JsonValueH []
 // must send nothing.
 //
 // Section 6's rule, applied: the responses the server produced go in
-// an array, and an EMPTY set of responses is not an empty array but no
+// an array, and an empty set of responses is not an empty array but no
 // message at all.  `None` is that "nothing", and it is a different
 // thing from `Some("[]")` — a client reading `[]` has been told its
 // batch produced results, which it did not.
@@ -355,6 +342,26 @@ fn decode_response(v: JsonValueH) -> Result<jrpcmsg.JrpcResponse, jrpcerr.JrpcFa
 // own id, and with the null id only when the id cannot be read.
 fn id_of(text: Str) -> JrpcId
     let Some(v) = json.parse(text) else return JrpcIdNull
+    if json.type_of(v) != "object"
+        return JrpcIdNull
+    id_in(v)
+
+// A batch read member by member: each one that decodes, and a refusal
+// for each one that does not, under its own id when it has one.
+fn members_of(v: JsonValueH) -> JrpcRead
+    var messages: [jrpcmsg.JrpcMessage] = []
+    var refusals: [jrpcmsg.JrpcResponse] = []
+    for i in 0..(json.len(v) ?? 0)
+        let item = json.index(v, i) ?? json.null()
+        let read = decode_message(item)
+        if let Ok(m) = read
+            list.push(messages, m)
+        if let Err(f) = read
+            list.push(refusals, jrpcmsg.failed(id_in(item), jrpcerr.error_for_fault(f)))
+    JrpcReadMixed(messages: messages, refusals: refusals)
+
+// The id of an object whose `id` member is one, or the null id.
+fn id_in(v: JsonValueH) -> JrpcId
     let Some(raw) = json.get(v, "id") else return JrpcIdNull
     match jrpcid.id_from_json(raw)
         Ok(i)  => i

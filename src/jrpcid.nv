@@ -1,36 +1,18 @@
-// jrpcid.nv — the request identifier, and the matching rule that makes
-// a response belong to a request.
+// jrpcid.nv — the request identifier, and the rule that makes a
+// response belong to a request.
 //
-// Every body here is a `todo()`; the signatures are the design.
+// Section 4 permits three things in `id`: a string, a number or null.
+// The id `"1"` and the id `1` are two ids, so `JrpcId` has an arm for
+// each and `id_equals` compares arm and value.
 //
-// THE ID IS A TYPE, NOT A STRING
+// The same section says a number SHOULD NOT have a fractional part.
+// `1.0` and `1` are one JSON number, so an id that went through a
+// floating-point parser could come back as other text than was sent.
+// This package refuses a number that is not written as an integer.
 //
-// Section 4 of the specification permits three things in `id`: a
-// String, a Number, or Null.  A client that sends `"1"` and a client
-// that sends `1` are sending different ids, and a server that turned
-// both into a string would answer the first client's request to the
-// second.  `JrpcId` has one arm for each of the three, so the
-// distinction survives a round trip and `id_equals` can be exact.
-//
-// A FRACTIONAL NUMBER IS REFUSED
-//
-// The same section says a Number SHOULD NOT contain fractional parts,
-// and the reason is arithmetic: `1.0` and `1` are one JSON number, so a
-// peer that round-trips an id through a double-precision parser can
-// hand back an id that no longer matches what it was sent.  This
-// package refuses a fractional id at the decode — `JrpcBadId` — rather
-// than accepting one it cannot promise to return unchanged.
-//
-// NULL IS AN ID A RESPONSE HAS AND A REQUEST DOES NOT
-//
-// Section 5 says that when the id of a request cannot be determined —
-// the text did not parse, or the object had no usable `id` — the
-// response's id MUST be Null.  So `JrpcIdNull` is a real value and
-// this package can construct one.  What it may never do is MATCH one:
-// `id_equals(JrpcIdNull, JrpcIdNull)` is FALSE, because two responses
-// that both failed to read an id are not answers to each other's
-// request.  That single false is the whole reason this module exists
-// rather than a comparison written inline.
+// Section 5 gives a response whose request's id could not be read the
+// null id.  Two such responses are not answers to each other's
+// requests, so `id_equals` of two nulls is false.
 
 use std.json
 use jrpcerr
@@ -111,7 +93,7 @@ pub fn is_null(id: JrpcId) -> Bool []
 // `JrpcIdInt(1)`, because the specification treats them as two ids and
 // a client is free to have both outstanding.
 //
-// FALSE FOR TWO NULLS.  A null id means "the id could not be
+// Two nulls do not match.  A null id means "the id could not be
 // determined", and two undetermined ids are not the same id.  A client
 // that matched them would deliver a parse-error response to whichever
 // request happened to be first in its table.
@@ -133,7 +115,7 @@ pub fn id_equals(a: JrpcId, b: JrpcId) -> Bool []
 // The id as text, for a log or a table key: `"7"`, `"\"init-1\""`,
 // `"null"`.
 //
-// A string id is rendered WITH its quotes, so that the id `1` and the
+// A string id is rendered with its quotes, so that the id `1` and the
 // id `"1"` do not print the same — which is what makes a log of a
 // mixed-type client readable at all.
 //

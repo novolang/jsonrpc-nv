@@ -1,33 +1,18 @@
 // jrpcerr.nv — the error object the protocol puts on the wire, and the
 // faults a decode can produce.
 //
-// Every body here is a `todo()`; the signatures are the design.
+// There are two types because they have two readers.  `JrpcError` is
+// the error object of section 5.1: the members `code`, `message` and
+// `data` that a response carries and a peer acts on.  `JrpcFault` is
+// what this package could not do: text that is not JSON, a member of
+// the wrong type, a frame whose header is malformed.  A fault never
+// goes on the wire as itself; `error_for_fault` decides which error
+// object a server answers it with.
 //
-// TWO KINDS OF WRONG, AND THEY ARE NOT THE SAME TYPE
-//
-// `JrpcError` is a VALUE THE PROTOCOL DEFINES: the three members
-// `code`, `message` and `data` that section 5.1 puts in a response, and
-// which a peer receives and acts on.  A method that failed answers one.
-//
-// `JrpcFault` is what THIS PACKAGE could not do: text that is not JSON,
-// a member of the wrong type, a frame whose header is malformed.  It
-// never goes on the wire as itself.
-//
-// They are separate types because they have separate audiences.  A
-// `JrpcError` is written by the method and read by the peer.  A
-// `JrpcFault` is read by the server that received the bytes, and the
-// server has to DECIDE what to answer — which is what
-// `error_for_fault` does, once, instead of every server deciding it
-// again.
-//
-// THE CODES ARE SECTION 5.1's, AND THE RANGE IS RESERVED
-//
-// Section 5.1 reserves -32768 to -32000 for the protocol, and names
-// five values in it.  Inside the reserved block, -32099 to -32000 is
-// set aside for implementation-defined server errors.  Everything
-// outside -32768 to -32000 is the application's to use.  `is_reserved`
-// and `server_error` are the two functions that keep an application
-// from quietly minting a code the protocol already means something by.
+// Section 5.1 reserves the codes -32768 to -32000 for the protocol and
+// names five of them.  Inside that block, -32099 to -32000 is for
+// implementation-defined server errors, and every code outside the
+// block is the application's.
 
 use std.json
 
@@ -96,7 +81,7 @@ pub enum JrpcFaultKind
     // blank line arrived.
     JrpcHeaderTooLarge
     // A frame's `Content-Length` is larger than the reader's limit.
-    // Refused BEFORE the bytes are buffered, which is the point: a
+    // Refused before the bytes are buffered, which is the point: a
     // peer that declares two gigabytes should not be allocated two
     // gigabytes first.
     JrpcContentTooLarge
@@ -128,8 +113,7 @@ pub struct JrpcFault
 // `Result<T, JrpcFault>` exist at all (SPEC section 3.4).
 impl Error for JrpcFault
     // The one-line message, for a log.
-    //
-    // Panics with `not implemented` until the bodies land.
+
     fn message(self) -> Str
         if self.offset < 0
             return "jsonrpc: ${kind_name(self.kind)}: ${self.detail}"
@@ -158,8 +142,7 @@ pub struct JrpcError
 // `Result<T, JrpcError>` exist at all (SPEC section 3.4).
 impl Error for JrpcError
     // Section 5.1's `message` member.
-    //
-    // Panics with `not implemented` until the bodies land.
+
     fn message(self) -> Str
         self.message
 
@@ -222,7 +205,7 @@ pub fn kind_name(k: JrpcFaultKind) -> Str []
         JrpcContentTooLarge    => "content_too_large"
         JrpcTruncated          => "truncated"
 
-// Whether a fault happened in the FRAMING rather than in the message.
+// Whether a fault happened in the framing rather than in the message.
 //
 // True for the six frame faults — no `Content-Length`, a bad one, a
 // bad header line, a bad charset, either size limit, a truncation.
@@ -253,11 +236,10 @@ pub fn is_framing_fault(k: JrpcFaultKind) -> Bool []
 
 // The error object a server should answer a decode fault with.
 //
-// THE FUNCTION THAT KEEPS EVERY SERVER FROM DECIDING THIS AGAIN.
-// Section 5.1 fixes the mapping and it is narrower than people
-// remember: only text that is not JSON is -32700, and everything that
-// parsed but is not a valid request object — a missing `jsonrpc`, a
-// `method` that is a number, an empty batch — is -32600.  A server
+// Section 5.1 fixes the mapping: only text that is not JSON is -32700,
+// and everything that parsed but is not a valid request object, such
+// as a missing `jsonrpc`, a `method` that is a number or an empty
+// batch, is -32600.  `params` of the wrong shape is -32602.  A server
 // that answered -32700 to a well-formed JSON object with no `method`
 // has told the peer its serialiser is broken when the peer's
 // serialiser is fine.

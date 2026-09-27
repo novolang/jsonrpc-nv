@@ -1,42 +1,19 @@
 // jrpcmsg.nv — the request, the response and the batch, as values whose
-// illegal shapes cannot be written.
+// forbidden shapes cannot be written.
 //
-// Every body here is a `todo()`; the signatures are the design.
+// Section 4.1 defines a notification as a request object without an
+// `id` member.  `JrpcRequest.id` is `?JrpcId`, and `None` is the
+// notification.  Section 4.1 says the server must not reply to one,
+// and section 6 says a batch of nothing but notifications is answered
+// with nothing at all, not an empty array; `replies_needed` answers 0
+// for both.
 //
-// THE NOTIFICATION IS THE ABSENCE OF THE ID
+// Section 5 says a response carries exactly one of `result` and
+// `error`.  `JrpcOutcome` has one arm for each, so a response holds
+// one by construction.
 //
-// Section 4.1: "A Notification is a Request object without an `id`
-// member."  Not a flag, not a boolean beside the id, not a separate
-// message type with the same three other members.  `JrpcRequest.id` is
-// `?JrpcId`, and `None` IS the notification — so a server cannot
-// construct a request that is a notification and has an id, and a
-// server that answers a notification has to have written the answer
-// against an id it does not have.
-//
-// The rule that follows is the one implementations get wrong: section
-// 4.1 says the server MUST NOT reply to a notification, and section 6
-// says a batch of nothing but notifications produces NO RESPONSE AT
-// ALL — not an empty array.  `replies_needed` answers zero for that
-// batch, and zero means send nothing.
-//
-// A RESPONSE CANNOT CARRY BOTH, AND CANNOT CARRY NEITHER
-//
-// Section 5: the `result` member and the `error` member are both
-// required and "exactly one" must be included.  Written as two
-// optional fields, both mistakes are reachable — a method that set
-// neither, a method that set `error` and forgot to clear `result`.
-// `JrpcOutcome` is an enum with one arm each, so the response holds
-// exactly one by construction and the decoder's `JrpcBothOutcomes` and
-// `JrpcNoOutcome` faults are the only places the two mistakes can
-// still be named.
-//
-// A BATCH CANNOT BE EMPTY
-//
-// Section 6 makes an empty array an Invalid Request, which is a
-// special case that exists only because the array is empty.  `batch`
-// answers a `Result` and refuses one, so no code path in this package
-// or above it ever holds an empty batch, and the special case lives at
-// the one place a batch is made.
+// Section 6 makes an empty batch an Invalid Request.  `batch` refuses
+// an empty list, so no batch value is ever empty.
 
 use std.json
 use jrpcerr
@@ -137,7 +114,7 @@ pub enum JrpcMessage
 
 // What arrived: one message, or a batch of them.
 //
-// Section 6's batch is an ARRAY of message objects, and the array is
+// Section 6's batch is an array of message objects, and the array is
 // visible at the top level and nowhere else — so this is the type the
 // codec answers and the type a server dispatches on, and no function
 // below this one has to wonder whether it is inside a batch.
@@ -364,12 +341,12 @@ pub fn message_count(e: JrpcEnvelope) -> Int []
 
 // How many responses this envelope requires.
 //
-// THE RULE EVERY IMPLEMENTATION GETS WRONG.  Section 6: a server
+// Section 6: a server
 // answers a batch with an array holding one response per non-
 // notification member — and "If there are no Response objects
 // contained within the Response array as it is to be sent to the
 // client, the server MUST NOT return an empty Array and should return
-// nothing at all."  So a batch of five notifications answers ZERO, and
+// nothing at all."  So a batch of five notifications answers 0, and
 // zero means send no bytes, not `[]`.
 //
 // A single notification answers zero for the same reason.  A single
@@ -411,11 +388,11 @@ pub fn replies_needed(e: JrpcEnvelope) -> Int []
 // ```
 pub fn messages_of(e: JrpcEnvelope) -> [JrpcMessage] []
     match e
-        JrpcSingle(m)  => [m]
-        JrpcBatch(ms)  => list.clone(ms)
+        JrpcSingle(m) => [m]
+        JrpcBatch(ms) => list.clone(ms)
 
-// Whether the envelope is a batch, which decides how the answer is
-// SHAPED.
+// Whether the envelope is a batch, which decides the shape of the
+// answer.
 //
 // A batch of one call is answered with a one-element array; a single
 // call is answered with an object.  A server that answered the first
