@@ -1,6 +1,6 @@
 [package]
 name        = "jsonrpc-nv"
-version     = "0.1.0"
+version     = "0.1.1"
 description = "JSON-RPC 2.0 as typed values: a request whose absent id IS the notification, a response that cannot carry both a result and an error, batches that cannot be empty, the reserved error codes, and the Content-Length framing LSP and DAP put in front of the messages as a feed-and-drain reader."
 license     = "Apache-2.0"
 

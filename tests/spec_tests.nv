@@ -199,7 +199,7 @@ fn mcp_requests() -> [Str]
 fn mcp_responses() -> [Str]
     ["{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\",\"serverInfo\":{\"name\":\"novo-mcp\",\"version\":\"0.13.0-25-gf736c655f\"},\"capabilities\":{\"tools\":{}},\"resultType\":\"complete\",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"novo-mcp\",\"version\":\"0.13.0-25-gf736c655f\"}}}}",
      "{\"jsonrpc\":\"2.0\",\"id\":\"s3\",\"error\":{\"code\":-32601,\"message\":\"unknown method: no/such\"}}",
-     "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"novo binary: /home/klajen/projects/novo/bin/novo\\nversion line: Novo compiler\"}],\"isError\":false,\"resultType\":\"complete\",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"novo-mcp\",\"version\":\"0.13.0-25-gf736c655f\"}}}}"]
+     "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"novo binary: /opt/novo/bin/novo\\nversion line: Novo compiler\"}],\"isError\":false,\"resultType\":\"complete\",\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"novo-mcp\",\"version\":\"0.13.0-25-gf736c655f\"}}}}"]
 
 // The message a frame of `text`, fed one byte at a time, reads back as.
 fn through_the_framing(text: Str) -> Str

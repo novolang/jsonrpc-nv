@@ -5,6 +5,12 @@ All notable changes to jsonrpc-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## [0.1.1] — 2026-10-01
+
+The recorded MCP transcript in the specification test named the path of
+the checkout it was recorded on; it now names a neutral one.  Nothing
+else changes.
+
 ## [0.1.0] — 2026-09-27
 
 The first implementation of the interface published as 0.0.1: the
